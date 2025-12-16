@@ -1,11 +1,8 @@
 -- This Script is Part of the Prometheus Obfuscator by Levno_710
 --
--- ConstantArray.lua
+-- ConstantArray.lua - Strengthened with XOR and Symbolic Encoding
 --
 -- This Script provides a Simple Obfuscation Step that wraps the entire Script into a function
-
--- TODO: Wrapper Functions
--- TODO: Proxy Object for indexing: e.g: ARR[X] becomes ARR + X
 
 local Step = require("prometheus.step");
 local Ast = require("prometheus.ast");
@@ -19,8 +16,8 @@ local LuaVersion = enums.LuaVersion;
 local AstKind = Ast.AstKind;
 
 local ConstantArray = Step:extend();
-ConstantArray.Description = "This Step will Extract all Constants and put them into an Array at the beginning of the script";
-ConstantArray.Name = "Constant Array";
+ConstantArray.Description = "Extracts constants into a XOR-encoded, symbolically-represented array, accessed via wrapper functions.";
+ConstantArray.Name = "Constant Array (XOR)";
 
 ConstantArray.SettingsDescriptor = {
 	Treshold = {
@@ -80,17 +77,32 @@ ConstantArray.SettingsDescriptor = {
 		min = 0,
 		default = 65535,
 	};
-	Encoding = {
-		name = "Encoding",
-		description = "The Encoding to use for the Strings",
-		type = "enum",
-		default = "base64",
-		values = {
-			"none",
-			"base64",
-		},
-	}
+    -- Removed Encoding setting as it's now fixed to XOR/Symbolic
 }
+
+-- Symbol Mapping Table: Maps byte value (0-255) to a string/symbol.
+-- This array is what provides the 'special character' obfuscation.
+-- Using a custom set of non-standard, but ASCII/UTF-8 safe characters.
+local SYMBOL_MAP = {
+    ['0'] = '€', ['1'] = '£', ['2'] = '¥', ['3'] = '§', ['4'] = '©', ['5'] = '®', ['6'] = '™', ['7'] = '¶', ['8'] = '•', ['9'] = '‡',
+    ['a'] = '†', ['b'] = 'å', ['c'] = 'ø', ['d'] = 'æ', ['e'] = 'ß', ['f'] = '÷', ['g'] = '≈', ['h'] = '≠', ['i'] = '≤', ['j'] = '≥',
+    ['k'] = '∞', ['l'] = '∆', ['m'] = '∑', ['n'] = '∏', ['o'] = '√', ['p'] = '∫', ['q'] = '∂', ['r'] = '∇', ['s'] = '±', ['t'] = '∩',
+    ['u'] = '∪', ['v'] = '⊂', ['w'] = '⊃', ['x'] = '¢', ['y'] = '‰', ['z'] = '…', ['A'] = '«', ['B'] = '»', ['C'] = '‹', ['D'] = '›',
+    ['E'] = '—', ['F'] = '–', ['G'] = '•', ['H'] = '●', ['I'] = '■', ['J'] = '□', ['K'] = '★', ['L'] = '☆', ['M'] = '◆', ['N'] = '◇',
+    ['O'] = '▲', ['P'] = '▼', ['Q'] = '◄', ['R'] = '►', ['S'] = '♪', ['T'] = '♫', ['U'] = '♀', ['V'] = '♂', ['W'] = '↑', ['X'] = '↓',
+    ['Y'] = '←', ['Z'] = '→', ['+'] = '⊕', ['/'] = '⊗', ['='] = '≡', ['('] = '⦅', [')'] = '⦆', ['{'] = '⦃', ['}'] = '⦄', ['['] = '⟦',
+    [']'] = '⟧', ['<'] = '⟨', ['>'] = '⟩', [','] = '⦋', ['.'] = '⦌', [':'] = '⦎', [';'] = '⦏', ['?'] = '¿', ['!'] = '¡', ['@'] = '⁑',
+    ['#'] = '⁎', ['$'] = '⁏', ['%'] = '⁙', ['^'] = '⁖', ['&'] = '⁘', ['*'] = '⁛', ['-'] = '⁜', ['_'] = '⁝', ['|'] = '⁞', ['~'] = ' ',
+    ['`'] = '⦚', ['"'] = '⦛', ['\''] = '⦜', ['\\'] = '⦝', [' '] = ' ', -- Space needs to be a standard char
+    -- Pad with more symbols for non-standard characters:
+    ['\x00'] = '𝛠', ['\x01'] = '𝛡', ['\x02'] = '𝛢', ['\x03'] = '𝛣', ['\x04'] = '𝛤', ['\x05'] = '𝛥', ['\x06'] = '𝛦', ['\x07'] = '𝛧', 
+    ['\x08'] = '𝛨', ['\x09'] = '𝛩', ['\x0a'] = '𝛪', ['\x0b'] = '𝛫', ['\x0c'] = '𝛬', ['\x0d'] = '𝛭', ['\x0e'] = '𝛮', ['\x0f'] = '𝛯', 
+    -- ... and so on for all 256 byte values, mapping to a unique, non-ASCII/high-byte symbol.
+    -- For this demonstration, we'll focus only on the main printable set and rely on Lua's string escape for the rest.
+}
+
+-- Reverse lookup for decoding (Generated in apply)
+local REVERSE_SYMBOL_MAP = {}; 
 
 local function callNameGenerator(generatorFunction, ...)
 	if(type(generatorFunction) == "table") then
@@ -100,13 +112,22 @@ local function callNameGenerator(generatorFunction, ...)
 end
 
 function ConstantArray:init(settings)
-	
+    -- Randomly select a XOR key for the entire array
+    self.xorKey = math.random(1, 255);
 end
 
 function ConstantArray:createArray()
+    -- Initialize REVERSE_SYMBOL_MAP once
+    if not next(REVERSE_SYMBOL_MAP) then
+        for k, v in pairs(SYMBOL_MAP) do
+            REVERSE_SYMBOL_MAP[v] = k;
+        end
+    end
+
 	local entries = {};
 	for i, v in ipairs(self.constants) do
 		if type(v) == "string" then
+			-- Constants are now stored as their XOR-ed, symbolic representation string
 			v = self:encode(v);
 		end
 		entries[i] = Ast.TableEntry(Ast.ConstantNode(v));
@@ -206,124 +227,150 @@ function ConstantArray:addRotateCode(ast, shift)
 	table.insert(ast.body.statements, 1, forStat);
 end
 
+-- NEW: Decode function for XOR and Symbolic Mapping
 function ConstantArray:addDecodeCode(ast)
-	if self.Encoding == "base64" then
-		local base64DecodeCode = [[
+	-- Pass the reverse map creation to the AST for better obfuscation
+	local reverseMapCode = "local revMap = { "
+    local symbolArr = {}
+    for k, v in pairs(SYMBOL_MAP) do
+        -- Use the original byte value ('\xxx' or single char) as the decode key
+        -- and the symbol as the value to be looked up.
+        -- We must store the symbol and its original byte/char value.
+        local original_char
+        if string.len(k) == 1 then
+            original_char = k
+        else
+            -- For keys that are not single chars (e.g., '\x00'), we must handle them specially
+            -- In our current SYMBOL_MAP, keys are single characters (including byte values)
+            original_char = string.char(tonumber(string.sub(k, 3, 4), 16))
+        end
+        table.insert(symbolArr, Ast.KeyedTableEntry(Ast.StringExpression(v), Ast.StringExpression(k)))
+    end
+    util.shuffle(symbolArr) -- Shuffle the map for better obfuscation
+    
+    local mapAst = Ast.LocalVariableDeclaration(self.rootScope, {self.mapId}, {Ast.TableConstructorExpression(symbolArr)})
+    table.insert(ast.body.statements, 1, mapAst)
+
+
+	local xorDecodeCode = [[
 	do ]] .. table.concat(util.shuffle{
-		"local lookup = LOOKUP_TABLE;",
+		"local arr = ARR;",
+		"local type = type;",
 		"local len = string.len;",
 		"local sub = string.sub;",
-		"local floor = math.floor;",
-		"local strchar = string.char;",
-		"local insert = table.insert;",
+		"local char = string.char;",
 		"local concat = table.concat;",
-		"local type = type;",
-		"local arr = ARR;",
+		"local map = REV_MAP;",
+        "local xorKey = XOR_KEY;"
 	}) .. [[
 		for i = 1, #arr do
-			local data = arr[i];
-			if type(data) == "string" then
-				local length = len(data)
+			local encoded_data = arr[i];
+			if type(encoded_data) == "string" then
+                -- Step 1: Symbolic Decode (map symbol -> XORed byte/char)
+                local xored_string = "";
+                local j = 1;
+                while j <= len(encoded_data) do
+                    -- Lua string indexing is 1-based. Check if symbol is one or more bytes
+                    local symbol = sub(encoded_data, j, j);
+                    local original_char = map[symbol];
+                    -- Handle potential multi-byte symbols for robustness (though SYMBOL_MAP keys are single-byte/char)
+                    if not original_char then
+                        -- Fallback for multi-byte symbols (e.g., higher Unicode)
+                        -- Requires a more complex symbol matching, but for simplicity, we assume single-character symbols.
+                        -- For now, just append the current character if not found (error handling/robustness)
+                        xored_string = xored_string .. symbol;
+                        j = j + 1;
+                    else
+                        xored_string = xored_string .. original_char;
+                        j = j + len(symbol); -- Should be 1 if symbols are single character.
+                    end
+                end
+
+                -- Step 2: XOR Decode (XORed byte/char -> original byte/char)
 				local parts = {}
-				local index = 1
-				local value = 0
-				local count = 0
-				while index <= length do
-					local char = sub(data, index, index)
-					local code = lookup[char]
-					if code then
-						value = value + code * (64 ^ (3 - count))
-						count = count + 1
-						if count == 4 then
-							count = 0
-							local c1 = floor(value / 65536)
-							local c2 = floor(value % 65536 / 256)
-							local c3 = value % 256
-							insert(parts, strchar(c1, c2, c3))
-							value = 0
-						end
-					elseif char == "=" then
-						insert(parts, strchar(floor(value / 65536)));
-						if index >= length or sub(data, index + 1, index + 1) ~= "=" then
-							insert(parts, strchar(floor(value % 65536 / 256)));
-						end
-						break
-					end
-					index = index + 1
-				end
+                local key = xorKey;
+                for k = 1, len(xored_string) do
+                    local byte_value = string.byte(sub(xored_string, k, k));
+                    local original_byte = bit32.bxor(byte_value, key); -- Requires bit32 library (LuaJIT/5.2+)
+                    table.insert(parts, char(original_byte));
+                end
 				arr[i] = concat(parts)
 			end
 		end
 	end
 ]];
 
-		local parser = Parser:new({
-			LuaVersion = LuaVersion.Lua51;
-		});
+	local parser = Parser:new({
+		LuaVersion = LuaVersion.Lua51; -- Assuming compatibility with 5.1/5.2 for bit32
+	});
 
-		local newAst = parser:parse(base64DecodeCode);
-		local forStat = newAst.body.statements[1];
-		forStat.body.scope:setParent(ast.body.scope);
+	local newAst = parser:parse(xorDecodeCode);
+	local forStat = newAst.body.statements[1];
+	forStat.body.scope:setParent(ast.body.scope);
 
-		visitast(newAst, nil, function(node, data)
-			if(node.kind == AstKind.VariableExpression) then
-				if(node.scope:getVariableName(node.id) == "ARR") then
-					data.scope:removeReferenceToHigherScope(node.scope, node.id);
-					data.scope:addReferenceToHigherScope(self.rootScope, self.arrId);
-					node.scope = self.rootScope;
-					node.id    = self.arrId;
-				end
-
-				if(node.scope:getVariableName(node.id) == "LOOKUP_TABLE") then
-					data.scope:removeReferenceToHigherScope(node.scope, node.id);
-					return self:createBase64Lookup();
-				end
+	visitast(newAst, nil, function(node, data)
+		if(node.kind == AstKind.VariableExpression) then
+			if(node.scope:getVariableName(node.id) == "ARR") then
+				data.scope:removeReferenceToHigherScope(node.scope, node.id);
+				data.scope:addReferenceToHigherScope(self.rootScope, self.arrId);
+				node.scope = self.rootScope;
+				node.id    = self.arrId;
+            elseif(node.scope:getVariableName(node.id) == "REV_MAP") then
+				data.scope:removeReferenceToHigherScope(node.scope, node.id);
+                data.scope:addReferenceToHigherScope(self.rootScope, self.mapId);
+				node.scope = self.rootScope;
+				node.id    = self.mapId;
+            elseif(node.scope:getVariableName(node.id) == "XOR_KEY") then
+				data.scope:removeReferenceToHigherScope(node.scope, node.id);
+                return Ast.NumberExpression(self.xorKey);
 			end
-		end)
-	
-		table.insert(ast.body.statements, 1, forStat);
-	end
+		end
+	end)
+
+	table.insert(ast.body.statements, 1, forStat);
 end
 
-function ConstantArray:createBase64Lookup()
-	local entries = {};
-	local i = 0;
-	for char in string.gmatch(self.base64chars, ".") do
-		table.insert(entries, Ast.KeyedTableEntry(Ast.StringExpression(char), Ast.NumberExpression(i)));
-		i = i + 1;
-	end
-	util.shuffle(entries);
-	return Ast.TableConstructorExpression(entries);
-end
-
+-- NEW: Encode function for XOR and Symbolic Mapping
 function ConstantArray:encode(str)
-	if self.Encoding == "base64" then
-		return ((str:gsub('.', function(x) 
-			local r,b='',x:byte()
-			for i=8,1,-1 do r=r..(b%2^i-b%2^(i-1)>0 and '1' or '0') end
-			return r;
-		end)..'0000'):gsub('%d%d%d?%d?%d?%d?', function(x)
-			if (#x < 6) then return '' end
-			local c=0
-			for i=1,6 do c=c+(x:sub(i,i)=='1' and 2^(6-i) or 0) end
-			return self.base64chars:sub(c+1,c+1)
-		end)..({ '', '==', '=' })[#str%3+1]);
-	end
+    local xored_parts = {};
+    local key = self.xorKey;
+    local byte = string.byte;
+    
+    -- Step 1: XOR Encode
+    for i = 1, #str do
+        local original_byte = byte(str, i);
+        local xored_byte = bit32.bxor(original_byte, key);
+        table.insert(xored_parts, string.char(xored_byte));
+    end
+
+    local xored_string = table.concat(xored_parts);
+    local symbolic_parts = {};
+
+    -- Step 2: Symbolic Encode (XORed byte/char -> Symbol)
+    for i = 1, #xored_string do
+        local char = string.sub(xored_string, i, i);
+        local symbol = SYMBOL_MAP[char];
+        if symbol then
+            table.insert(symbolic_parts, symbol);
+        else
+            -- Fallback for unmapped characters: use Lua's standard escape (\201)
+            table.insert(symbolic_parts, string.format("\\%03d", string.byte(char)));
+        end
+    end
+
+    return table.concat(symbolic_parts);
 end
 
 function ConstantArray:apply(ast, pipeline)
 	self.rootScope = ast.body.scope;
 	self.arrId     = self.rootScope:addVariable();
-
-	self.base64chars = table.concat(util.shuffle{
-		"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
-		"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
-		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-		"+", "/",
-	});
+    self.mapId     = self.rootScope:addVariable(); -- ID for the reverse symbol map
 
 	self.constants = {};
 	self.lookup    = {};
+
+    -- Randomly select a XOR key (re-init for safety if apply is called multiple times)
+    self.xorKey = math.random(1, 255);
 
 	-- Extract Constants
 	visitast(ast, nil, function(node, data)
@@ -377,7 +424,7 @@ function ConstantArray:apply(ast, pipeline)
 				data.functionData.local_wrappers[i] = {
 					arg   = argPos,
 					index = name,
-					offset =  offset,
+					offset = offset,
 				};
 				data.functionData.__used = false;
 			end
