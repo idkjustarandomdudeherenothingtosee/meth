@@ -15,6 +15,26 @@ local enums = require("prometheus.enums")
 local LuaVersion = enums.LuaVersion;
 local AstKind = Ast.AstKind;
 
+-- START LUA 5.1 FIX: Compatible Bitwise XOR function
+local function bxor(a, b)
+    -- This is a standard bitwise XOR implementation for Lua 5.1
+    -- It uses arithmetic operations (fmod/%) and math.floor.
+    local p = 1
+    local c = 0
+    while a > 0 or b > 0 do
+        local ra = a % 2
+        local rb = b % 2
+        if ra ~= rb then
+            c = c + p
+        end
+        a = math.floor(a / 2)
+        b = math.floor(b / 2)
+        p = p * 2
+    end
+    return c
+end
+-- END LUA 5.1 FIX
+
 local ConstantArray = Step:extend();
 ConstantArray.Description = "Extracts constants into a XOR-encoded, symbolically-represented array, accessed via wrapper functions.";
 ConstantArray.Name = "Constant Array (XOR)";
@@ -77,11 +97,9 @@ ConstantArray.SettingsDescriptor = {
 		min = 0,
 		default = 65535,
 	};
-    -- Removed Encoding setting as it's now fixed to XOR/Symbolic
 }
 
 -- Symbol Mapping Table: Maps byte value (0-255) to a string/symbol.
--- This array is what provides the 'special character' obfuscation.
 -- Using a custom set of non-standard, but ASCII/UTF-8 safe characters.
 local SYMBOL_MAP = {
     ['0'] = '€', ['1'] = '£', ['2'] = '¥', ['3'] = '§', ['4'] = '©', ['5'] = '®', ['6'] = '™', ['7'] = '¶', ['8'] = '•', ['9'] = '‡',
@@ -93,12 +111,7 @@ local SYMBOL_MAP = {
     ['Y'] = '←', ['Z'] = '→', ['+'] = '⊕', ['/'] = '⊗', ['='] = '≡', ['('] = '⦅', [')'] = '⦆', ['{'] = '⦃', ['}'] = '⦄', ['['] = '⟦',
     [']'] = '⟧', ['<'] = '⟨', ['>'] = '⟩', [','] = '⦋', ['.'] = '⦌', [':'] = '⦎', [';'] = '⦏', ['?'] = '¿', ['!'] = '¡', ['@'] = '⁑',
     ['#'] = '⁎', ['$'] = '⁏', ['%'] = '⁙', ['^'] = '⁖', ['&'] = '⁘', ['*'] = '⁛', ['-'] = '⁜', ['_'] = '⁝', ['|'] = '⁞', ['~'] = ' ',
-    ['`'] = '⦚', ['"'] = '⦛', ['\''] = '⦜', ['\\'] = '⦝', [' '] = ' ', -- Space needs to be a standard char
-    -- Pad with more symbols for non-standard characters:
-    ['\x00'] = '𝛠', ['\x01'] = '𝛡', ['\x02'] = '𝛢', ['\x03'] = '𝛣', ['\x04'] = '𝛤', ['\x05'] = '𝛥', ['\x06'] = '𝛦', ['\x07'] = '𝛧', 
-    ['\x08'] = '𝛨', ['\x09'] = '𝛩', ['\x0a'] = '𝛪', ['\x0b'] = '𝛫', ['\x0c'] = '𝛬', ['\x0d'] = '𝛭', ['\x0e'] = '𝛮', ['\x0f'] = '𝛯', 
-    -- ... and so on for all 256 byte values, mapping to a unique, non-ASCII/high-byte symbol.
-    -- For this demonstration, we'll focus only on the main printable set and rely on Lua's string escape for the rest.
+    ['`'] = '⦚', ['"'] = '⦛', ['\''] = '⦜', ['\\'] = '⦝', [' '] = ' ',
 }
 
 -- Reverse lookup for decoding (Generated in apply)
@@ -227,23 +240,12 @@ function ConstantArray:addRotateCode(ast, shift)
 	table.insert(ast.body.statements, 1, forStat);
 end
 
--- NEW: Decode function for XOR and Symbolic Mapping
+-- UPDATED: Decode function for XOR and Symbolic Mapping
 function ConstantArray:addDecodeCode(ast)
 	-- Pass the reverse map creation to the AST for better obfuscation
-	local reverseMapCode = "local revMap = { "
+    -- We must store the symbol and its original byte/char value.
     local symbolArr = {}
     for k, v in pairs(SYMBOL_MAP) do
-        -- Use the original byte value ('\xxx' or single char) as the decode key
-        -- and the symbol as the value to be looked up.
-        -- We must store the symbol and its original byte/char value.
-        local original_char
-        if string.len(k) == 1 then
-            original_char = k
-        else
-            -- For keys that are not single chars (e.g., '\x00'), we must handle them specially
-            -- In our current SYMBOL_MAP, keys are single characters (including byte values)
-            original_char = string.char(tonumber(string.sub(k, 3, 4), 16))
-        end
         table.insert(symbolArr, Ast.KeyedTableEntry(Ast.StringExpression(v), Ast.StringExpression(k)))
     end
     util.shuffle(symbolArr) -- Shuffle the map for better obfuscation
@@ -263,6 +265,24 @@ function ConstantArray:addDecodeCode(ast)
 		"local map = REV_MAP;",
         "local xorKey = XOR_KEY;"
 	}) .. [[
+        -- START INJECTED LUA 5.1 BXOR FUNCTION
+        local function bxor(a, b) 
+            local p = 1
+            local c = 0
+            while a > 0 or b > 0 do
+                local ra = a % 2
+                local rb = b % 2
+                if ra ~= rb then
+                    c = c + p
+                end
+                a = math.floor(a / 2)
+                b = math.floor(b / 2)
+                p = p * 2
+            end
+            return c
+        end
+        -- END INJECTED FUNCTION
+
 		for i = 1, #arr do
 			local encoded_data = arr[i];
 			if type(encoded_data) == "string" then
@@ -270,19 +290,24 @@ function ConstantArray:addDecodeCode(ast)
                 local xored_string = "";
                 local j = 1;
                 while j <= len(encoded_data) do
-                    -- Lua string indexing is 1-based. Check if symbol is one or more bytes
                     local symbol = sub(encoded_data, j, j);
                     local original_char = map[symbol];
-                    -- Handle potential multi-byte symbols for robustness (though SYMBOL_MAP keys are single-byte/char)
-                    if not original_char then
-                        -- Fallback for multi-byte symbols (e.g., higher Unicode)
-                        -- Requires a more complex symbol matching, but for simplicity, we assume single-character symbols.
-                        -- For now, just append the current character if not found (error handling/robustness)
-                        xored_string = xored_string .. symbol;
-                        j = j + 1;
-                    else
+                    if original_char then
                         xored_string = xored_string .. original_char;
-                        j = j + len(symbol); -- Should be 1 if symbols are single character.
+                        j = j + len(symbol);
+                    else
+                        -- Handle fallback for \xxx encoded characters (not mapped symbols)
+                        if sub(encoded_data, j, j) == '\\' then
+                            local byte_val = tonumber(sub(encoded_data, j + 1, j + 3));
+                            if byte_val then
+                                xored_string = xored_string .. char(byte_val);
+                                j = j + 4;
+                            else
+                                j = j + 1; -- Should not happen if well-formed
+                            end
+                        else
+                            j = j + 1; -- Skip unmapped character
+                        end
                     end
                 end
 
@@ -291,7 +316,7 @@ function ConstantArray:addDecodeCode(ast)
                 local key = xorKey;
                 for k = 1, len(xored_string) do
                     local byte_value = string.byte(sub(xored_string, k, k));
-                    local original_byte = bit32.bxor(byte_value, key); -- Requires bit32 library (LuaJIT/5.2+)
+                    local original_byte = bxor(byte_value, key); 
                     table.insert(parts, char(original_byte));
                 end
 				arr[i] = concat(parts)
@@ -301,7 +326,7 @@ function ConstantArray:addDecodeCode(ast)
 ]];
 
 	local parser = Parser:new({
-		LuaVersion = LuaVersion.Lua51; -- Assuming compatibility with 5.1/5.2 for bit32
+		LuaVersion = LuaVersion.Lua51;
 	});
 
 	local newAst = parser:parse(xorDecodeCode);
@@ -330,16 +355,16 @@ function ConstantArray:addDecodeCode(ast)
 	table.insert(ast.body.statements, 1, forStat);
 end
 
--- NEW: Encode function for XOR and Symbolic Mapping
+-- UPDATED: Encode function for XOR and Symbolic Mapping
 function ConstantArray:encode(str)
     local xored_parts = {};
     local key = self.xorKey;
     local byte = string.byte;
     
-    -- Step 1: XOR Encode
+    -- Step 1: XOR Encode (using LUA 5.1 compatible bxor)
     for i = 1, #str do
         local original_byte = byte(str, i);
-        local xored_byte = bit32.bxor(original_byte, key);
+        local xored_byte = bxor(original_byte, key); 
         table.insert(xored_parts, string.char(xored_byte));
     end
 
@@ -354,6 +379,7 @@ function ConstantArray:encode(str)
             table.insert(symbolic_parts, symbol);
         else
             -- Fallback for unmapped characters: use Lua's standard escape (\201)
+            -- This is safe and keeps the symbolic encoding layer simple.
             table.insert(symbolic_parts, string.format("\\%03d", string.byte(char)));
         end
     end
