@@ -17,41 +17,44 @@ numberstoexpressions.settingsdescriptor = {
 	MaxDepth = { type = "number", default = 25, min = 5, max = 60 }
 }
 
-local function safeeq(a, b)
-	return tonumber(tostring(a)) == tonumber(tostring(b))
+local function safe(v)
+	return tonumber(tostring(v))
 end
 
-function numberstoexpressions:init(settings)
 function numberstoexpressions:init()
-	local settings = self.Settings or {}
-	self.treshold = settings.Treshold or 1
-	self.internaltreshold = settings.InternalTreshold or 0.15
-	self.maxdepth = settings.MaxDepth or 25
+	local s = rawget(self, "Settings")
+	if type(s) ~= "table" then
+		s = {}
+	end
+
+	self.treshold = type(s.Treshold) == "number" and s.Treshold or 1
+	self.internaltreshold = type(s.InternalTreshold) == "number" and s.InternalTreshold or 0.15
+	self.maxdepth = type(s.MaxDepth) == "number" and s.MaxDepth or 25
 
 	self.generators = {
 		function(val, depth)
 			local a = math.random(-2^20, 2^20)
 			local b = val - a
-			if tonumber(tostring(a + b)) ~= val then return false end
+			if safe(a + b) ~= val then return false end
 			return ast.AddExpression(self:create(a, depth), self:create(b, depth), false)
 		end,
 		function(val, depth)
 			local a = math.random(-2^20, 2^20)
 			local b = val + a
-			if tonumber(tostring(b - a)) ~= val then return false end
+			if safe(b - a) ~= val then return false end
 			return ast.SubExpression(self:create(b, depth), self:create(a, depth), false)
 		end,
 		function(val, depth)
 			if val == 0 then return false end
 			local m = math.random(1, 25)
 			local a = val * m
-			if tonumber(tostring(a / m)) ~= val then return false end
+			if safe(a / m) ~= val then return false end
 			return ast.DivExpression(self:create(a, depth), self:create(m, depth), false)
 		end,
 		function(val, depth)
 			local m = math.random(1, 25)
 			local a = val / m
-			if tonumber(tostring(a * m)) ~= val then return false end
+			if safe(a * m) ~= val then return false end
 			return ast.MulExpression(self:create(a, depth), self:create(m, depth), false)
 		end,
 		function(val, depth)
@@ -61,7 +64,7 @@ function numberstoexpressions:init()
 			local a = math.random(-100000, 100000)
 			local b = math.random(-100000, 100000)
 			local c = val - a - b
-			if tonumber(tostring(a + b + c)) ~= val then return false end
+			if safe(a + b + c) ~= val then return false end
 			return ast.AddExpression(
 				ast.AddExpression(self:create(a, depth), self:create(b, depth), false),
 				self:create(c, depth),
@@ -70,7 +73,7 @@ function numberstoexpressions:init()
 		end,
 		function(val, depth)
 			local z = math.random(-50000, 50000)
-			if tonumber(tostring(val + z - z)) ~= val then return false end
+			if safe(val + z - z) ~= val then return false end
 			return ast.SubExpression(
 				ast.AddExpression(self:create(val, depth), self:create(z, depth), false),
 				self:create(z, depth),
@@ -129,10 +132,8 @@ end
 
 function numberstoexpressions:apply(asttree)
 	visitast(asttree, nil, function(node)
-		if node.kind == astkind.NumberExpression then
-			if math.random() <= self.treshold then
-				return self:create(node.value, 0)
-			end
+		if node.kind == astkind.NumberExpression and math.random() <= self.treshold then
+			return self:create(node.value, 0)
 		end
 	end)
 end
