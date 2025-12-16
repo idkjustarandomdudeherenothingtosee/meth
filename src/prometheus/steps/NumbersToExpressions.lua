@@ -2,7 +2,6 @@ unpack = unpack or table.unpack
 
 local step = require("prometheus.step")
 local ast = require("prometheus.ast")
-local scope = require("prometheus.scope")
 local visitast = require("prometheus.visitast")
 local util = require("prometheus.util")
 
@@ -13,9 +12,9 @@ numberstoexpressions.description = "numbers to expressions"
 numberstoexpressions.name = "numbers to expressions"
 
 numberstoexpressions.settingsdescriptor = {
-	treshold = { type = "number", default = 1, min = 0, max = 1 },
-	internaltreshold = { type = "number", default = 0.15, min = 0, max = 0.9 },
-	maxdepth = { type = "number", default = 25, min = 5, max = 60 }
+	Treshold = { type = "number", default = 1, min = 0, max = 1 },
+	InternalTreshold = { type = "number", default = 0.15, min = 0, max = 0.9 },
+	MaxDepth = { type = "number", default = 25, min = 5, max = 60 }
 }
 
 local function safeeq(a, b)
@@ -23,6 +22,10 @@ local function safeeq(a, b)
 end
 
 function numberstoexpressions:init(settings)
+	self.treshold = settings.Treshold or 1
+	self.internaltreshold = settings.InternalTreshold or 0.15
+	self.maxdepth = settings.MaxDepth or 25
+
 	self.generators = {
 		function(val, depth)
 			local a = math.random(-2^20, 2^20)
@@ -50,7 +53,6 @@ function numberstoexpressions:init(settings)
 			return ast.MulExpression(self:create(a, depth), self:create(m, depth), false)
 		end,
 		function(val, depth)
-			if not safeeq(-(-val), val) then return false end
 			return ast.UnaryExpression("-", ast.UnaryExpression("-", self:create(val, depth), false), false)
 		end,
 		function(val, depth)
@@ -74,11 +76,9 @@ function numberstoexpressions:init(settings)
 			)
 		end,
 		function(val, depth)
-			if not safeeq(val * 1, val) then return false end
 			return ast.MulExpression(self:create(val, depth), self:create(1, depth), false)
 		end,
 		function(val, depth)
-			if not safeeq(val + 0, val) then return false end
 			return ast.AddExpression(self:create(val, depth), self:create(0, depth), false)
 		end
 	}
@@ -94,7 +94,7 @@ function numberstoexpressions:create(val, depth)
 		local node = gens[i](val, depth + 1)
 		if node then
 			if math.random() < 0.35 then
-				return self:createwrapper(node, depth)
+				return self:wrap(node, depth + 1)
 			end
 			return node
 		end
@@ -103,23 +103,24 @@ function numberstoexpressions:create(val, depth)
 	return ast.NumberExpression(val)
 end
 
-function numberstoexpressions:createwrapper(node, depth)
+function numberstoexpressions:wrap(node, depth)
 	if depth >= self.maxdepth then
 		return node
 	end
 
 	local z = math.random(-1000, 1000)
+
 	if math.random() < 0.5 then
 		return ast.AddExpression(
-			ast.SubExpression(node, self:create(z, depth + 1), false),
-			self:create(z, depth + 1),
+			ast.SubExpression(node, self:create(z, depth), false),
+			self:create(z, depth),
 			false
 		)
 	end
 
 	return ast.SubExpression(
-		ast.AddExpression(node, self:create(z, depth + 1), false),
-		self:create(z, depth + 1),
+		ast.AddExpression(node, self:create(z, depth), false),
+		self:create(z, depth),
 		false
 	)
 end
