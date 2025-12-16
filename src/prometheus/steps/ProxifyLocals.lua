@@ -9,7 +9,7 @@ local Ast = require("prometheus.ast");
 local Scope = require("prometheus.scope");
 local visitast = require("prometheus.visitast");
 local RandomLiterals = require("prometheus.randomLiterals")
-local util = require("prometheus.util") -- Assuming a shuffle/utility function exists in 'util'
+local util = require("prometheus.util") -- Assuming util is part of the Prometheus framework
 
 local AstKind = Ast.AstKind;
 
@@ -35,7 +35,8 @@ ProifyLocals.SettingsDescriptor = {
 -- Utility function to create a string expression that is concatenation-based
 function ProifyLocals:CreateDynamicKey(keyString, depth)
     local len = #keyString
-    if len < 4 or math.random() < 0.2 then
+    -- Use simple string literal 80% of the time, or if string is too short
+    if len < 4 or math.random() < 0.8 then 
         return Ast.StringExpression(keyString)
     end
     
@@ -83,24 +84,22 @@ local MetatableExpressions = {
     { constructor = Ast.DivExpression, key = "__div" },
     { constructor = Ast.PowExpression, key = "__pow" },
     { constructor = Ast.StrCatExpression, key = "__concat" },
-    { constructor = Ast.UnmExpression, key = "__unm" }, -- Unary Minus (Stronger Obfuscation)
-    { constructor = Ast.LenExpression, key = "__len" }, -- Length operator (Stronger Obfuscation)
+    { constructor = Ast.UnmExpression, key = "__unm" },
+    { constructor = Ast.LenExpression, key = "__len" },
 }
 
 function ProifyLocals:init(settings)
-	
+	-- No custom init logic needed
 end
 
 local function generateLocalMetatableInfo(pipeline)
     local usedOps = {};
     local info = {};
     
-    -- Use utility for shuffling the expanded MetatableExpressions list
     local shuffled_ops = util.shuffle(MetatableExpressions)
 
     for i, v in ipairs({"setValue","getValue", "index"}) do
         local rop;
-        -- Find a unique operator
         repeat
             rop = shuffled_ops[math.random(#shuffled_ops)]
         until not usedOps[rop]
@@ -122,13 +121,12 @@ function ProifyLocals:CreateAssignmentExpression(info, expr, parentScope)
     local setValueSelf = setValueFunctionScope:addVariable();
     local setValueArg = setValueFunctionScope:addVariable();
     
-    -- Dynamic key for Assignment
     local dynamicKeyExpr = self:CreateDynamicKey(info.valueName);
 
-    -- Introduce junk logic before assignment to make the body less obvious
+    -- Junk logic: Local variable declaration
     local junkVarId = setValueFunctionScope:addVariable(callNameGenerator(self.pipeline.namegenerator, 16));
     local junkStatement = Ast.LocalVariableDeclaration(setValueFunctionScope, {junkVarId}, {
-        Ast.AddExpression(Ast.VariableExpression(setValueFunctionScope, setValueArg), Ast.NumberExpression(0), false) -- Junk math
+        Ast.AddExpression(Ast.VariableExpression(setValueFunctionScope, setValueArg), Ast.NumberExpression(0), false)
     });
 
     local setvalueFunctionLiteral = Ast.FunctionLiteralExpression(
@@ -136,8 +134,8 @@ function ProifyLocals:CreateAssignmentExpression(info, expr, parentScope)
             Ast.VariableExpression(setValueFunctionScope, setValueSelf), 
             Ast.VariableExpression(setValueFunctionScope, setValueArg), 
         },
-        Ast.Block({ -- Create Function Body
-            junkStatement, -- Junk variable declaration
+        Ast.Block({
+            junkStatement, 
             Ast.AssignmentStatement({
                 Ast.AssignmentIndexing(Ast.VariableExpression(setValueFunctionScope, setValueSelf), dynamicKeyExpr);
             }, {
@@ -153,16 +151,14 @@ function ProifyLocals:CreateAssignmentExpression(info, expr, parentScope)
     local getValueArg = getValueFunctionScope:addVariable();
     local rawgetVarId = getValueFunctionScope:resolveGlobal("rawget");
 
-    -- Dynamic key for lookup
-    local dynamicKeyExpr = self:CreateDynamicKey(info.valueName);
+    local dynamicKeyExpr_get = self:CreateDynamicKey(info.valueName);
 
-    -- Always use rawget with dynamic key
     local getValueIdxExpr = Ast.FunctionCallExpression(Ast.VariableExpression(getValueFunctionScope, rawgetVarId), {
         Ast.VariableExpression(getValueFunctionScope, getValueSelf),
-        dynamicKeyExpr,
+        dynamicKeyExpr_get,
     });
     
-    -- Obfuscate the return: wrap the actual lookup in another expression (e.g., v + 0)
+    -- Obfuscate the return: wrap the actual lookup in another expression
     local returnExpr = Ast.AddExpression(getValueIdxExpr, Ast.NumberExpression(0), false);
     
     local getvalueFunctionLiteral = Ast.FunctionLiteralExpression(
@@ -170,7 +166,7 @@ function ProifyLocals:CreateAssignmentExpression(info, expr, parentScope)
             Ast.VariableExpression(getValueFunctionScope, getValueSelf), 
             Ast.VariableExpression(getValueFunctionScope, getValueArg), 
         },
-        Ast.Block({ -- Create Function Body
+        Ast.Block({
             Ast.ReturnStatement({
                 returnExpr;
             });
@@ -178,7 +174,7 @@ function ProifyLocals:CreateAssignmentExpression(info, expr, parentScope)
     );
     table.insert(metatableVals, Ast.KeyedTableEntry(Ast.StringExpression(info.getValue.key), getvalueFunctionLiteral));
 
-    -- setmetatable( { [dynamic key] = expr }, metatable )
+    -- Final assignment: setmetatable( { [dynamic key] = expr }, metatable )
     parentScope:addReferenceToHigherScope(self.setMetatableVarScope, self.setMetatableVarId);
     return Ast.FunctionCallExpression(
         Ast.VariableExpression(self.setMetatableVarScope, self.setMetatableVarId),
@@ -192,12 +188,10 @@ function ProifyLocals:CreateAssignmentExpression(info, expr, parentScope)
 end
 
 function ProifyLocals:apply(ast, pipeline)
-    self.pipeline = pipeline -- Store pipeline for access in generators
+    self.pipeline = pipeline 
     local localMetatableInfos = {};
     local function getLocalMetatableInfo(scope, id)
-        -- Global Variables should not be transformed
         if(scope.isGlobal) then return nil end;
-
         localMetatableInfos[scope] = localMetatableInfos[scope] or {};
         if localMetatableInfos[scope][id] then
             if localMetatableInfos[scope][id].locked then
@@ -216,40 +210,32 @@ function ProifyLocals:apply(ast, pipeline)
         localMetatableInfos[scope][id] = {locked = true}
     end
 
-    -- Create Setmetatable Variable
+    -- Setup global helper variables
     self.setMetatableVarScope = ast.body.scope;
     self.setMetatableVarId    = ast.body.scope:addVariable();
-
-    -- Create Empty Function Variable
     self.emptyFunctionScope   = ast.body.scope;
     self.emptyFunctionId      = ast.body.scope:addVariable();
     self.emptyFunctionUsed    = false;
 
-    -- Add Empty Function Declaration
+    -- Add Empty Function Declaration (first statement)
     table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(self.emptyFunctionScope, {self.emptyFunctionId}, {
         Ast.FunctionLiteralExpression({}, Ast.Block({}, Scope:new(ast.body.scope)));
     }));
 
 
     visitast(ast, function(node, data)
-        -- Lock for loop variables and function arguments (Standard practice)
-        if(node.kind == AstKind.ForStatement) then
-            disableMetatableInfo(node.scope, node.id)
-        end
+        -- Lock Variables (Pre-walk)
+        if(node.kind == AstKind.ForStatement) then disableMetatableInfo(node.scope, node.id) end
         if(node.kind == AstKind.ForInStatement) then
-            for i, id in ipairs(node.ids) do
-                disableMetatableInfo(node.scope, id);
-            end
+            for i, id in ipairs(node.ids) do disableMetatableInfo(node.scope, id); end
         end
         if(node.kind == AstKind.FunctionDeclaration or node.kind == AstKind.LocalFunctionDeclaration or node.kind == AstKind.FunctionLiteralExpression) then
             for i, expr in ipairs(node.args) do
-                if expr.kind == AstKind.VariableExpression then
-                    disableMetatableInfo(expr.scope, expr.id);
-                end
+                if expr.kind == AstKind.VariableExpression then disableMetatableInfo(expr.scope, expr.id); end
             end
         end
 
-        -- Assignment Statements (a = 1) -> a[op_key] = 1
+        -- Assignment Statements (a = 1)
         if(node.kind == AstKind.AssignmentStatement) then
             if(#node.lhs == 1 and node.lhs[1].kind == AstKind.AssignmentVariable) then
                 local variable = node.lhs[1];
@@ -259,18 +245,20 @@ function ProifyLocals:apply(ast, pipeline)
                     local vexp = Ast.VariableExpression(variable.scope, variable.id);
                     vexp.__ignoreProxifyLocals = true;
                     
-                    -- Use the random metatable constructor (e.g., vexp + args[1])
+                    -- Metatable call (vexp + args[1]) triggers __add/sub/etc
                     args[1] = localMetatableInfo.setValue.constructor(vexp, args[1]);
                     
                     self.emptyFunctionUsed = true;
                     data.scope:addReferenceToHigherScope(self.emptyFunctionScope, self.emptyFunctionId);
-                    -- Use empty function call to wrap the assignment logic, hiding the actual statement
+                    -- Assignment is replaced by function call to obscure the statement
                     return Ast.FunctionCallStatement(Ast.VariableExpression(self.emptyFunctionScope, self.emptyFunctionId), args);
                 end
             end
         end
     end, function(node, data)
-        -- Local Variable Declaration (local a = setmetatable( { [key] = 1 }, mt) )
+        -- Post-walk transformations
+
+        -- Local Variable Declaration (local a = setmetatable(...) )
         if(node.kind == AstKind.LocalVariableDeclaration) then
             for i, id in ipairs(node.ids) do
                 local expr = node.expressions[i] or Ast.NilExpression();
@@ -282,14 +270,14 @@ function ProifyLocals:apply(ast, pipeline)
             end
         end
 
-        -- Variable Expression (print(a)) -> print(a + literal)
+        -- Variable Expression (print(a) -> print(a + literal) )
         if(node.kind == AstKind.VariableExpression and not node.__ignoreProxifyLocals) then
             local localMetatableInfo = getLocalMetatableInfo(node.scope, node.id);
             if localMetatableInfo then
-                -- Get a literal AST node using RandomLiterals.CreateExpression (assuming this helper exists)
                 local literal_value;
                 local literal_type = self.settings.LiteralType;
                 
+                -- Determine literal value
                 if literal_type == "dictionary" then
                     literal_value = RandomLiterals.Dictionary();
                 elseif literal_type == "number" then
@@ -300,10 +288,9 @@ function ProifyLocals:apply(ast, pipeline)
                     literal_value = RandomLiterals.Any(pipeline);
                 end
                 
-                -- Assuming RandomLiterals has a CreateExpression function based on the flow
                 local literal_node = RandomLiterals.CreateExpression(literal_value, literal_type);
                 
-                -- Apply the random metatable constructor (e.g., node + literal_node)
+                -- Apply the metatable constructor for value retrieval
                 return localMetatableInfo.getValue.constructor(node, literal_node);
             end
         end
@@ -312,7 +299,6 @@ function ProifyLocals:apply(ast, pipeline)
         if(node.kind == AstKind.AssignmentVariable) then
             local localMetatableInfo = getLocalMetatableInfo(node.scope, node.id);
             if localMetatableInfo then
-                -- The LHS of the assignment statement changes to an AssignmentIndexing node
                 return Ast.AssignmentIndexing(node, self:CreateDynamicKey(localMetatableInfo.valueName));
             end
         end
@@ -331,13 +317,12 @@ function ProifyLocals:apply(ast, pipeline)
         if(node.kind == AstKind.FunctionDeclaration) then
             local localMetatableInfo = getLocalMetatableInfo(node.scope, node.id);
             if(localMetatableInfo) then
-                -- The name index is replaced with the dynamic key expression
                 table.insert(node.indices, 1, self:CreateDynamicKey(localMetatableInfo.valueName));
             end
         end
     end)
 
-    -- Add Setmetatable Variable Declaration
+    -- Add Setmetatable Variable Declaration (second statement)
     table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(self.setMetatableVarScope, {self.setMetatableVarId}, {
         Ast.VariableExpression(self.setMetatableVarScope:resolveGlobal("setmetatable"))
     }));
