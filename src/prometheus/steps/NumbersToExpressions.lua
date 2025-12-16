@@ -60,17 +60,11 @@ function numberstoexpressions.init(self)
 		end,
 
 		function(val, depth)
-			if depth >= self.maxdepth then
-				return ast.NumberExpression(val)
-			end
+			if depth >= self.maxdepth then return ast.NumberExpression(val) end
 			if math.random() < 0.5 then
-				return ast.UnaryExpression("-", self:create(val, depth + 1), false)
+				return ast.UnaryOpExpression("-", self:create(val, depth + 1), false)
 			end
-			return ast.UnaryExpression(
-				"-",
-				ast.UnaryExpression("-", self:create(val, depth + 1), false),
-				false
-			)
+			return ast.UnaryOpExpression("-", ast.UnaryOpExpression("-", self:create(val, depth + 1), false), false)
 		end,
 
 		function(val, depth)
