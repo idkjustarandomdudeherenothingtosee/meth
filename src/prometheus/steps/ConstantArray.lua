@@ -1,6 +1,6 @@
 -- This Script is Part of the Prometheus Obfuscator by Levno_710
 --
--- ConstantArray.lua - Strengthened with XOR and Symbolic Encoding
+-- ConstantArray.lua - Strengthened with XOR and Symbolic Encoding (Lua 5.1 Safe)
 --
 -- This Script provides a Simple Obfuscation Step that wraps the entire Script into a function
 
@@ -18,7 +18,7 @@ local AstKind = Ast.AstKind;
 -- START LUA 5.1 FIX: Compatible Bitwise XOR function
 local function bxor(a, b)
     -- This is a standard bitwise XOR implementation for Lua 5.1
-    -- It uses arithmetic operations (fmod/%) and math.floor.
+    -- It uses arithmetic operations (%) and math.floor.
     local p = 1
     local c = 0
     while a > 0 or b > 0 do
@@ -240,19 +240,17 @@ function ConstantArray:addRotateCode(ast, shift)
 	table.insert(ast.body.statements, 1, forStat);
 end
 
--- UPDATED: Decode function for XOR and Symbolic Mapping
+-- UPDATED: Decode function for XOR and Symbolic Mapping with LUA 5.1 and Nil-Safety
 function ConstantArray:addDecodeCode(ast)
-	-- Pass the reverse map creation to the AST for better obfuscation
-    -- We must store the symbol and its original byte/char value.
+    -- Create AST for the Reverse Symbol Map (REV_MAP)
     local symbolArr = {}
     for k, v in pairs(SYMBOL_MAP) do
         table.insert(symbolArr, Ast.KeyedTableEntry(Ast.StringExpression(v), Ast.StringExpression(k)))
     end
-    util.shuffle(symbolArr) -- Shuffle the map for better obfuscation
+    util.shuffle(symbolArr) 
     
     local mapAst = Ast.LocalVariableDeclaration(self.rootScope, {self.mapId}, {Ast.TableConstructorExpression(symbolArr)})
     table.insert(ast.body.statements, 1, mapAst)
-
 
 	local xorDecodeCode = [[
 	do ]] .. table.concat(util.shuffle{
@@ -292,21 +290,28 @@ function ConstantArray:addDecodeCode(ast)
                 while j <= len(encoded_data) do
                     local symbol = sub(encoded_data, j, j);
                     local original_char = map[symbol];
+                    
                     if original_char then
+                        -- Found a mapped symbol
                         xored_string = xored_string .. original_char;
                         j = j + len(symbol);
                     else
-                        -- Handle fallback for \xxx encoded characters (not mapped symbols)
-                        if sub(encoded_data, j, j) == '\\' then
-                            local byte_val = tonumber(sub(encoded_data, j + 1, j + 3));
+                        -- Nil Index Safety: Handle fallback for \xxx encoded characters
+                        if sub(encoded_data, j, j) == '\\' and j + 3 <= len(encoded_data) then
+                            local byte_str = sub(encoded_data, j + 1, j + 3);
+                            local byte_val = tonumber(byte_str);
                             if byte_val then
                                 xored_string = xored_string .. char(byte_val);
                                 j = j + 4;
                             else
-                                j = j + 1; -- Should not happen if well-formed
+                                -- If '\' is followed by non-numeric, treat it as a literal character
+                                xored_string = xored_string .. symbol;
+                                j = j + 1;
                             end
                         else
-                            j = j + 1; -- Skip unmapped character
+                            -- If neither a mapped symbol nor a \xxx escape, pass it through
+                            xored_string = xored_string .. symbol;
+                            j = j + 1; 
                         end
                     end
                 end
@@ -379,7 +384,6 @@ function ConstantArray:encode(str)
             table.insert(symbolic_parts, symbol);
         else
             -- Fallback for unmapped characters: use Lua's standard escape (\201)
-            -- This is safe and keeps the symbolic encoding layer simple.
             table.insert(symbolic_parts, string.format("\\%03d", string.byte(char)));
         end
     end
