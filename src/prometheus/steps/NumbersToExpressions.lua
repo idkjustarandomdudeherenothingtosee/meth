@@ -33,75 +33,70 @@ NumbersToExpressions.SettingsDescriptor = {
 }
 
 function NumbersToExpressions:init(settings)
-	self.ExpressionGenerators = {
-    function(val, depth)
-        local a = math.random(-2^20, 2^20)
-        local b = val - a
-        if tonumber(tostring(a + b)) ~= val then
-            return false
-        end
-        return Ast.AddExpression(self:CreateNumberExpression(a, depth + 1), self:CreateNumberExpression(b, depth + 1), false)
+    self.ExpressionGenerators = {
+    function(val, depth) -- Addition
+        local val2 = math.random(-2^20, 2^20);
+        local diff = val - val2;
+        -- Use a small tolerance for floating point numbers
+        if math.abs((val2 + diff) - val) > 1e-9 then return false; end
+        return Ast.AddExpression(self:CreateNumberExpression(val2, depth), self:CreateNumberExpression(diff, depth), false);
+    end, 
+
+    function(val, depth) -- Subtraction
+        local val2 = math.random(-2^20, 2^20);
+        local diff = val + val2;
+        if math.abs((diff - val2) - val) > 1e-9 then return false; end
+        return Ast.SubExpression(self:CreateNumberExpression(diff, depth), self:CreateNumberExpression(val2, depth), false);
     end,
-    function(val, depth)
-        local a = math.random(-2^20, 2^20)
-        local b = val + a
-        if tonumber(tostring(b - a)) ~= val then
-            return false
+    
+    function(val, depth) -- Multiplication
+        -- Avoid division by zero, and use numbers that result in an integer divisor for 'val'
+        local val2_options = {};
+        for i = 1, 10 do -- Search for small, non-zero divisors
+            if val % i == 0 and i ~= 0 then table.insert(val2_options, i); end
+            if val % (-i) == 0 and -i ~= 0 then table.insert(val2_options, -i); end
         end
-        return Ast.SubExpression(self:CreateNumberExpression(b, depth + 1), self:CreateNumberExpression(a, depth + 1), false)
+        
+        if #val2_options == 0 then return false; end
+        
+        local val2 = val2_options[math.random(1, #val2_options)];
+        local factor = val / val2;
+        
+        if math.abs((val2 * factor) - val) > 1e-9 then return false; end
+        return Ast.MulExpression(self:CreateNumberExpression(val2, depth), self:CreateNumberExpression(factor, depth), false);
     end,
-    function(val, depth)
-        local a = math.random(1, 2^10)
-        local b = val / a
-        if b % 1 ~= 0 then
-            return false
-        end
-        if tonumber(tostring(b * a)) ~= val then
-            return false
-        end
-        return Ast.MulExpression(self:CreateNumberExpression(b, depth + 1), self:CreateNumberExpression(a, depth + 1), false)
+    
+    function(val, depth) -- Division
+        -- Generate a random divisor and calculate the dividend
+        local val2 = math.random(1, 10); -- A small, non-zero divisor
+        local dividend = val * val2;
+        
+        if math.abs((dividend / val2) - val) > 1e-9 then return false; end
+        return Ast.DivExpression(self:CreateNumberExpression(dividend, depth), self:CreateNumberExpression(val2, depth), false);
     end,
-    function(val, depth)
-        local a = math.random(1, 2^10)
-        local b = val * a
-        if tonumber(tostring(b / a)) ~= val then
-            return false
+    
+    function(val, depth) -- Aggregation-like function (Sum of Randoms + Difference)
+        local num_terms = math.random(3, 5);
+        local sum_rand = 0;
+        local rand_terms = {};
+        for i = 1, num_terms do
+            local term = math.random(-100, 100);
+            table.insert(rand_terms, term);
+            sum_rand = sum_rand + term;
         end
-        return Ast.DivExpression(self:CreateNumberExpression(b, depth + 1), self:CreateNumberExpression(a, depth + 1), false)
-    end,
-    function(val, depth)
-        local a = math.random(0, 2^20)
-        local b = bit32.bxor(val, a)
-        if bit32.bxor(b, a) ~= val then
-            return false
+
+        local required_term = val - sum_rand;
+        
+        -- Create a chained AddExpression for the random terms
+        local expr = self:CreateNumberExpression(rand_terms[1], depth);
+        for i = 2, num_terms do
+            expr = Ast.AddExpression(expr, self:CreateNumberExpression(rand_terms[i], depth), false);
         end
-        return Ast.BxorExpression(self:CreateNumberExpression(b, depth + 1), self:CreateNumberExpression(a, depth + 1))
-    end,
-    function(val, depth)
-        local a = math.random(1, 2^10)
-        local b = -val + a
-        if tonumber(tostring(-(b - a))) ~= val then
-            return false
-        end
-        return Ast.UnaryMinusExpression(
-            Ast.SubExpression(self:CreateNumberExpression(b, depth + 1), self:CreateNumberExpression(a, depth + 1), false)
-        )
-    end,
-    function(val, depth)
-        local a = math.random(1, 2^10)
-        local b = math.random(1, 2^10)
-        local c = val + a - b
-        if tonumber(tostring(c - a + b)) ~= val then
-            return false
-        end
-        return Ast.SubExpression(
-            Ast.AddExpression(self:CreateNumberExpression(c, depth + 1), self:CreateNumberExpression(b, depth + 1), false),
-            self:CreateNumberExpression(a, depth + 1),
-            false
-        )
+        
+        -- Add the final required term to make the sum equal to 'val'
+        return Ast.AddExpression(expr, self:CreateNumberExpression(required_term, depth), false);
     end
 }
-
 end
 
 function NumbersToExpressions:CreateNumberExpression(val, depth)
