@@ -22,6 +22,8 @@ local function safeeq(a, b)
 end
 
 function numberstoexpressions:init(settings)
+function numberstoexpressions:init()
+	local settings = self.Settings or {}
 	self.treshold = settings.Treshold or 1
 	self.internaltreshold = settings.InternalTreshold or 0.15
 	self.maxdepth = settings.MaxDepth or 25
@@ -30,26 +32,26 @@ function numberstoexpressions:init(settings)
 		function(val, depth)
 			local a = math.random(-2^20, 2^20)
 			local b = val - a
-			if not safeeq(a + b, val) then return false end
+			if tonumber(tostring(a + b)) ~= val then return false end
 			return ast.AddExpression(self:create(a, depth), self:create(b, depth), false)
 		end,
 		function(val, depth)
 			local a = math.random(-2^20, 2^20)
 			local b = val + a
-			if not safeeq(b - a, val) then return false end
+			if tonumber(tostring(b - a)) ~= val then return false end
 			return ast.SubExpression(self:create(b, depth), self:create(a, depth), false)
 		end,
 		function(val, depth)
 			if val == 0 then return false end
 			local m = math.random(1, 25)
 			local a = val * m
-			if not safeeq(a / m, val) then return false end
+			if tonumber(tostring(a / m)) ~= val then return false end
 			return ast.DivExpression(self:create(a, depth), self:create(m, depth), false)
 		end,
 		function(val, depth)
 			local m = math.random(1, 25)
 			local a = val / m
-			if not safeeq(a * m, val) then return false end
+			if tonumber(tostring(a * m)) ~= val then return false end
 			return ast.MulExpression(self:create(a, depth), self:create(m, depth), false)
 		end,
 		function(val, depth)
@@ -59,7 +61,7 @@ function numberstoexpressions:init(settings)
 			local a = math.random(-100000, 100000)
 			local b = math.random(-100000, 100000)
 			local c = val - a - b
-			if not safeeq(a + b + c, val) then return false end
+			if tonumber(tostring(a + b + c)) ~= val then return false end
 			return ast.AddExpression(
 				ast.AddExpression(self:create(a, depth), self:create(b, depth), false),
 				self:create(c, depth),
@@ -68,7 +70,7 @@ function numberstoexpressions:init(settings)
 		end,
 		function(val, depth)
 			local z = math.random(-50000, 50000)
-			if not safeeq(val + z - z, val) then return false end
+			if tonumber(tostring(val + z - z)) ~= val then return false end
 			return ast.SubExpression(
 				ast.AddExpression(self:create(val, depth), self:create(z, depth), false),
 				self:create(z, depth),
