@@ -21,10 +21,7 @@ local function safeint(n)
 	return tonumber(string.format("%.0f", n))
 end
 
-function NumbersToExpressions:init(settings)
-	self.Treshold = settings.Treshold
-	self.InternalTreshold = settings.InternalTreshold
-
+function NumbersToExpressions:init()
 	self.ExpressionGenerators = {
 		function(val, depth)
 			local v2 = safeint(math.random(-2^20, 2^20))
@@ -50,7 +47,7 @@ function NumbersToExpressions:init(settings)
 
 		function(val, depth)
 			if val == 0 then return false end
-			local m = safeint(math.random(1, 9))
+			local m = safeint(math.random(2, 9))
 			local p = safeint(val * m)
 			if safeint(p / m) ~= val then return false end
 			return Ast.DivExpression(
@@ -61,7 +58,7 @@ function NumbersToExpressions:init(settings)
 		end,
 
 		function(val, depth)
-			local m = safeint(math.random(1, 9))
+			local m = safeint(math.random(2, 9))
 			local d = safeint(val / m)
 			if safeint(d * m) ~= val then return false end
 			return Ast.MulExpression(
@@ -80,12 +77,12 @@ function NumbersToExpressions:init(settings)
 end
 
 function NumbersToExpressions:CreateNumberExpression(val, depth)
-	if depth > 0 and math.random() >= self.InternalTreshold or depth > 18 then
+	if depth > 0 and math.random() >= self.InternalTreshold or depth > 20 then
 		return Ast.NumberExpression(val)
 	end
 
-	local gens = util.shuffle({ unpack(self.ExpressionGenerators) })
-	for _, gen in ipairs(gens) do
+	local generators = util.shuffle({ unpack(self.ExpressionGenerators) })
+	for _, gen in ipairs(generators) do
 		local node = gen(val, depth + 1)
 		if node then
 			return node
@@ -97,8 +94,10 @@ end
 
 function NumbersToExpressions:apply(ast)
 	visitast(ast, nil, function(node)
-		if node.kind == AstKind.NumberExpression and math.random() <= self.Treshold then
-			return self:CreateNumberExpression(node.value, 0)
+		if node.kind == AstKind.NumberExpression then
+			if math.random() <= self.Treshold then
+				return self:CreateNumberExpression(node.value, 0)
+			end
 		end
 	end)
 end
