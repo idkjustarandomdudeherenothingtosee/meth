@@ -1,148 +1,134 @@
 unpack = unpack or table.unpack
 
-local step = require("prometheus.step")
-local ast = require("prometheus.ast")
+local Step = require("prometheus.step")
+local Ast = require("prometheus.ast")
+local Scope = require("prometheus.scope")
 local visitast = require("prometheus.visitast")
 local util = require("prometheus.util")
 
-local astkind = ast.AstKind
+local AstKind = Ast.AstKind
 
-local numberstoexpressions = step.extend(step)
-numberstoexpressions.description = "numbers to expressions"
-numberstoexpressions.name = "numbers to expressions"
+local NumbersToExpressions = Step.extend()
 
-numberstoexpressions.settingsdescriptor = {
-	Threshold = { type = "number", default = 1, min = 0, max = 1 },
-	InternalThreshold = { type = "number", default = 0.15, min = 0, max = 0.9 },
-	MaxDepth = { type = "number", default = 25, min = 5, max = 60 }
+NumbersToExpressions.Description = "This Step Converts number Literals to Expressions"
+NumbersToExpressions.Name = "Numbers To Expressions"
+
+NumbersToExpressions.SettingsDescriptor = {
+	Treshold = {
+		type = "number",
+		default = 1,
+		min = 0,
+		max = 1
+	},
+	InternalTreshold = {
+		type = "number",
+		default = 0.2,
+		min = 0,
+		max = 0.8
+	}
 }
 
-local function safe(v)
-	return tonumber(tostring(v))
+local function safeint(n)
+	return tonumber(string.format("%.0f", n))
 end
 
-function numberstoexpressions.init(self)
-	local s = rawget(self, "Settings")
-	if type(s) ~= "table" then s = {} end
+function NumbersToExpressions.init(self, settings)
+	self.Treshold = settings.Treshold
+	self.InternalTreshold = settings.InternalTreshold
 
-	self.threshold = type(s.Threshold) == "number" and s.Threshold or 1
-	self.internalthreshold = type(s.InternalThreshold) == "number" and s.InternalThreshold or 0.15
-	self.maxdepth = type(s.MaxDepth) == "number" and s.MaxDepth or 25
-
-	self.generators = {
+	self.ExpressionGenerators = {
 		function(val, depth)
-			local a = math.random(-2^20, 2^20)
-			local b = val - a
-			if safe(a + b) ~= val then return false end
-			return ast.AddExpression(self:create(a, depth + 1), self:create(b, depth + 1), false)
-		end,
-
-		function(val, depth)
-			local a = math.random(-2^20, 2^20)
-			local b = val + a
-			if safe(b - a) ~= val then return false end
-			return ast.SubExpression(self:create(b, depth + 1), self:create(a, depth + 1), false)
-		end,
-
-		function(val, depth)
-			if val == 0 then return false end
-			local m = math.random(1, 25)
-			local a = val * m
-			if safe(a / m) ~= val then return false end
-			return ast.DivExpression(self:create(a, depth + 1), self:create(m, depth + 1), false)
-		end,
-
-		function(val, depth)
-			local m = math.random(1, 25)
-			local a = val / m
-			if safe(a * m) ~= val then return false end
-			return ast.MulExpression(self:create(a, depth + 1), self:create(m, depth + 1), false)
-		end,
-
-		function(val, depth)
-			if depth >= self.maxdepth then return ast.NumberExpression(val) end
-			if math.random() < 0.5 then
-				return ast.UnaryOpExpression("-", self:create(val, depth + 1), false)
+			local v2 = safeint(math.random(-2^20, 2^20))
+			local d = safeint(val - v2)
+			if safeint(d + v2) ~= val then
+				return false
 			end
-			return ast.UnaryOpExpression("-", ast.UnaryOpExpression("-", self:create(val, depth + 1), false), false)
-		end,
-
-		function(val, depth)
-			local a = math.random(-100000, 100000)
-			local b = math.random(-100000, 100000)
-			local c = val - a - b
-			if safe(a + b + c) ~= val then return false end
-			return ast.AddExpression(
-				ast.AddExpression(self:create(a, depth + 1), self:create(b, depth + 1), false),
-				self:create(c, depth + 1),
+			return Ast.AddExpression(
+				self.CreateNumberExpression(self, v2, depth),
+				self.CreateNumberExpression(self, d, depth),
 				false
 			)
 		end,
 
 		function(val, depth)
-			local z = math.random(-50000, 50000)
-			if safe(val + z - z) ~= val then return false end
-			return ast.SubExpression(
-				ast.AddExpression(self:create(val, depth + 1), self:create(z, depth + 1), false),
-				self:create(z, depth + 1),
+			local v2 = safeint(math.random(-2^20, 2^20))
+			local d = safeint(val + v2)
+			if safeint(d - v2) ~= val then
+				return false
+			end
+			return Ast.SubExpression(
+				self.CreateNumberExpression(self, d, depth),
+				self.CreateNumberExpression(self, v2, depth),
 				false
 			)
 		end,
 
 		function(val, depth)
-			return ast.MulExpression(self:create(val, depth + 1), self:create(1, depth + 1), false)
+			if val == 0 then
+				return false
+			end
+			local m = safeint(math.random(1, 9))
+			local p = safeint(val * m)
+			if safeint(p / m) ~= val then
+				return false
+			end
+			return Ast.DivExpression(
+				self.CreateNumberExpression(self, p, depth),
+				self.CreateNumberExpression(self, m, depth),
+				false
+			)
 		end,
 
 		function(val, depth)
-			return ast.AddExpression(self:create(val, depth + 1), self:create(0, depth + 1), false)
+			local m = safeint(math.random(1, 9))
+			local d = safeint(val / m)
+			if safeint(d * m) ~= val then
+				return false
+			end
+			return Ast.MulExpression(
+				self.CreateNumberExpression(self, d, depth),
+				self.CreateNumberExpression(self, m, depth),
+				false
+			)
+		end,
+
+		function(val, depth)
+			local n = safeint(-val)
+			if safeint(-n) ~= val then
+				return false
+			end
+			return Ast.UnaryExpression(
+				"-",
+				self.CreateNumberExpression(self, n, depth)
+			)
 		end
 	}
 end
 
-function numberstoexpressions.create(self, val, depth)
-	if depth >= self.maxdepth or (depth > 0 and math.random() >= self.internalthreshold) then
-		return ast.NumberExpression(val)
+function NumbersToExpressions.CreateNumberExpression(self, val, depth)
+	if depth > 0 and math.random() >= self.InternalTreshold or depth > 18 then
+		return Ast.NumberExpression(val)
 	end
 
-	local gens = util.shuffle({ unpack(self.generators) })
-	for i = 1, #gens do
-		local node = gens[i](val, depth)
+	local gens = util.shuffle({ unpack(self.ExpressionGenerators) })
+	for _, gen in ipairs(gens) do
+		local node = gen(val, depth + 1)
 		if node then
-			if math.random() < 0.35 then
-				return self:wrap(node, depth + 1)
-			end
 			return node
 		end
 	end
 
-	return ast.NumberExpression(val)
+	return Ast.NumberExpression(val)
 end
 
-function numberstoexpressions.wrap(self, node, depth)
-	if depth >= self.maxdepth then return node end
-
-	local z = math.random(-1000, 1000)
-	if math.random() < 0.5 then
-		return ast.AddExpression(
-			ast.SubExpression(node, self:create(z, depth + 1), false),
-			self:create(z, depth + 1),
-			false
-		)
-	end
-
-	return ast.SubExpression(
-		ast.AddExpression(node, self:create(z, depth + 1), false),
-		self:create(z, depth + 1),
-		false
-	)
-end
-
-function numberstoexpressions.apply(self, asttree)
-	visitast(asttree, nil, function(node)
-		if node.kind == astkind.NumberExpression and math.random() <= self.threshold then
-			return self:create(node.value, 0)
+function NumbersToExpressions.apply(self, ast)
+	visitast(ast, nil, function(node)
+		if node.kind == AstKind.NumberExpression then
+			if math.random() <= self.Treshold then
+				return self.CreateNumberExpression(self, node.value, 0)
+			end
 		end
 	end)
 end
 
-return numberstoexpressions
+return NumbersToExpressions
