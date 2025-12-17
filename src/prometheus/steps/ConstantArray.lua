@@ -1,8 +1,7 @@
 -- This Script is Part of the Prometheus Obfuscator by Levno_710
 --
--- ConstantArray.lua - Strengthened for Luau & Lua 5.1 with Nil Safety
---
--- Provides XOR encoding, Symbolic Mapping, and compiler-safe escaping.
+-- ConstantArray.lua - Luau/Lua 5.1 Safe with AST Protection
+-- Prevents "attempt to index a number value" by protecting generated nodes.
 
 local Step = require("prometheus.step");
 local Ast = require("prometheus.ast");
@@ -14,6 +13,14 @@ local enums = require("prometheus.enums")
 
 local LuaVersion = enums.LuaVersion;
 local AstKind = Ast.AstKind;
+
+-- Helper to create a number node that other steps (like NumbersToExpressions) will ignore
+local function SafeNumber(n)
+    local node = Ast.NumberExpression(n)
+    node.NoObfuscation = true -- Standard Prometheus flag to skip this node in other steps
+    node.IsGenerated = true
+    return node
+end
 
 -- Standard Bitwise XOR implementation for Lua 5.1 / Luau fallback
 local function bxor(a, b)
@@ -27,70 +34,20 @@ local function bxor(a, b)
 end
 
 local ConstantArray = Step:extend();
-ConstantArray.Description = "Extracts constants into a XOR-encoded, symbolic array with Luau-safe escaping and AST protection.";
+ConstantArray.Description = "Extracts constants into a XOR-encoded, symbolic array. Luau safe and protected from AST corruption.";
 ConstantArray.Name = "Constant Array (Luau Safe)";
 
 ConstantArray.SettingsDescriptor = {
-	Treshold = {
-		name = "Treshold",
-		description = "The relative amount of nodes that will be affected",
-		type = "number",
-		default = 1,
-		min = 0,
-		max = 1,
-	},
-	StringsOnly = {
-		name = "StringsOnly",
-		description = "Wether to only Extract Strings",
-		type = "boolean",
-		default = false,
-	},
-	Shuffle = {
-		name = "Shuffle",
-		description = "Wether to shuffle the order of Elements in the Array",
-		type = "boolean",
-		default = true,
-	},
-	Rotate = {
-		name = "Rotate",
-		description = "Wether to rotate the String Array. This will be undone on runtime.",
-		type = "boolean",
-		default = true,
-	},
-	LocalWrapperTreshold = {
-		name = "LocalWrapperTreshold",
-		description = "The relative amount of nodes functions, that will get local wrappers",
-		type = "number",
-		default = 1,
-		min = 0,
-		max = 1,
-	},
-	LocalWrapperCount = {
-		name = "LocalWrapperCount",
-		description = "The number of Local wrapper Functions per scope.",
-		type = "number",
-		min = 0,
-		max = 512,
-		default = 0,
-	},
-	LocalWrapperArgCount = {
-		name = "LocalWrapperArgCount",
-		description = "The number of Arguments to the Local wrapper Functions",
-		type = "number",
-		min = 1,
-		default = 10,
-		max = 200,
-	},
-	MaxWrapperOffset = {
-		name = "MaxWrapperOffset",
-		description = "The Max Offset for the Wrapper Functions",
-		type = "number",
-		min = 0,
-		default = 65535,
-	},
+	Treshold = { name = "Treshold", type = "number", default = 1 },
+	StringsOnly = { name = "StringsOnly", type = "boolean", default = false },
+	Shuffle = { name = "Shuffle", type = "boolean", default = true },
+	Rotate = { name = "Rotate", type = "boolean", default = true },
+	LocalWrapperTreshold = { name = "LocalWrapperTreshold", type = "number", default = 1 },
+	LocalWrapperCount = { name = "LocalWrapperCount", type = "number", default = 0 },
+	LocalWrapperArgCount = { name = "LocalWrapperArgCount", type = "number", default = 10 },
+	MaxWrapperOffset = { name = "MaxWrapperOffset", type = "number", default = 65535 },
 }
 
--- Symbol Mapping Table (Safe printable character set)
 local SYMBOL_MAP = {
     ['0'] = '!', ['1'] = '@', ['2'] = '#', ['3'] = '$', ['4'] = '%', ['5'] = '^', ['6'] = '&', ['7'] = '*', ['8'] = '(', ['9'] = ')',
     ['a'] = 'Q', ['b'] = 'W', ['c'] = 'E', ['d'] = 'R', ['e'] = 'T', ['f'] = 'Y', ['g'] = 'U', ['h'] = 'I', ['i'] = 'O', ['j'] = 'P',
@@ -102,11 +59,8 @@ local SYMBOL_MAP = {
     ['+'] = '_', ['/'] = '-', ['='] = '+', [' '] = ' ',
 }
 
-local function callNameGenerator(generatorFunction, ...)
-	if(type(generatorFunction) == "table") then
-		generatorFunction = generatorFunction.generateName;
-	end
-	return generatorFunction(...);
+local function callNameGenerator(pipeline, len)
+    return pipeline.namegenerator:generateName(len or 8)
 end
 
 function ConstantArray:init(settings)
@@ -121,9 +75,7 @@ function ConstantArray:addConstant(value)
 end
 
 function ConstantArray:getConstant(value, data)
-	if not self.lookup[value] then
-		self:addConstant(value)
-	end
+	if not self.lookup[value] then self:addConstant(value) end
 	return self:indexing(self.lookup[value], data);
 end
 
@@ -131,37 +83,32 @@ function ConstantArray:indexing(index, data)
 	if self.LocalWrapperCount > 0 and data.functionData.local_wrappers then
 		local wrappers = data.functionData.local_wrappers;
 		local wrapper = wrappers[math.random(#wrappers)];
-		local args = {};
 		local ofs = index - self.wrapperOffset - wrapper.offset;
+		local args = {};
 		for i = 1, self.LocalWrapperArgCount do
-			args[i] = (i == wrapper.arg) and Ast.NumberExpression(ofs) or Ast.NumberExpression(math.random(ofs - 100, ofs + 100));
+			args[i] = (i == wrapper.arg) and SafeNumber(ofs) or SafeNumber(math.random(ofs - 100, ofs + 100));
 		end
 		data.scope:addReferenceToHigherScope(wrappers.scope, wrappers.id);
 		return Ast.FunctionCallExpression(Ast.IndexExpression(Ast.VariableExpression(wrappers.scope, wrappers.id), Ast.StringExpression(wrapper.index)), args);
 	else
 		data.scope:addReferenceToHigherScope(self.rootScope, self.wrapperId);
-		return Ast.FunctionCallExpression(Ast.VariableExpression(self.rootScope, self.wrapperId), {Ast.NumberExpression(index - self.wrapperOffset)});
+		return Ast.FunctionCallExpression(Ast.VariableExpression(self.rootScope, self.wrapperId), {SafeNumber(index - self.wrapperOffset)});
 	end
 end
 
 function ConstantArray:encode(str)
     local xored_parts = {};
-    for i = 1, #str do
-        table.insert(xored_parts, string.char(bxor(string.byte(str, i), self.xorKey)));
-    end
+    for i = 1, #str do table.insert(xored_parts, string.char(bxor(string.byte(str, i), self.xorKey))) end
     local xored_string = table.concat(xored_parts);
     local symbolic_parts = {};
     for i = 1, #xored_string do
         local b = string.byte(xored_string, i);
         local char = string.char(b);
         local symbol = SYMBOL_MAP[char];
-        if symbol then
-            table.insert(symbolic_parts, symbol);
+        if symbol then table.insert(symbolic_parts, symbol)
         elseif b < 32 or b > 126 or char == "\\" or char == "\"" or char == "'" then
-            table.insert(symbolic_parts, string.format("\\%03d", b));
-        else
-            table.insert(symbolic_parts, char);
-        end
+            table.insert(symbolic_parts, string.format("\\%03d", b))
+        else table.insert(symbolic_parts, char) end
     end
     return table.concat(symbolic_parts);
 end
@@ -233,7 +180,8 @@ function ConstantArray:addDecodeCode(ast)
             elseif(node.scope:getVariableName(node.id) == "REV_MAP") then
                 node.scope = self.rootScope; node.id = self.mapId;
             elseif(node.scope:getVariableName(node.id) == "XOR_KEY") then
-                return Ast.NumberExpression(self.xorKey);
+                local knode = SafeNumber(self.xorKey)
+                return knode
 			end
 		end
 	end)
@@ -247,7 +195,6 @@ function ConstantArray:apply(ast, pipeline)
 	self.constants = {};
 	self.lookup    = {};
 
-	-- Phase 1: Identify nodes
 	visitast(ast, nil, function(node, data)
 		if math.random() <= self.Treshold then
 			if node.kind == AstKind.StringExpression then
@@ -269,46 +216,39 @@ function ConstantArray:apply(ast, pipeline)
 	self.wrapperOffset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset);
 	self.wrapperId     = self.rootScope:addVariable();
 
-	-- Phase 2: Modify AST (Safe Return logic)
 	visitast(ast, function(node, data)
 		if self.LocalWrapperCount > 0 and node.kind == AstKind.Block and node.isFunctionBlock and math.random() <= self.LocalWrapperTreshold then
 			local id = node.scope:addVariable()
 			data.functionData.local_wrappers = { id = id, scope = node.scope };
 			for i = 1, self.LocalWrapperCount do
-				data.functionData.local_wrappers[i] = { 
-                    arg = math.random(1, self.LocalWrapperArgCount), 
-                    index = callNameGenerator(pipeline.namegenerator, 8), 
-                    offset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset) 
-                };
+				data.functionData.local_wrappers[i] = { arg = math.random(1, self.LocalWrapperArgCount), index = callNameGenerator(pipeline), offset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset) };
 			end
 		end
 	end, function(node, data)
 		if node.__apply_constant_array then
-			node.__apply_constant_array = nil; -- Clear flag
-            
-            local replacement = self:getConstant(node.value, data)
-            if replacement then
-                return replacement -- Replaces node
+			node.__apply_constant_array = nil;
+            if node.kind == AstKind.StringExpression or (not self.StringsOnly and node.isConstant) then
+                local replacement = self:getConstant(node.value, data)
+                if replacement then return replacement end
             end
 		end
-        return nil -- Keeps original node, preventing AST corruption
 	end);
 
 	self:addDecodeCode(ast);
     
-    -- Main wrapper function declaration
     local funcScope = Scope:new(self.rootScope)
     local arg = funcScope:addVariable()
+    
+    -- Injected Wrapper with runtime check to prevent indexing numbers
     table.insert(ast.body.statements, 1, Ast.LocalFunctionDeclaration(self.rootScope, self.wrapperId, {Ast.VariableExpression(funcScope, arg)}, Ast.Block({
         Ast.ReturnStatement({
             Ast.IndexExpression(
                 Ast.VariableExpression(self.rootScope, self.arrId), 
-                Ast.AddExpression(Ast.VariableExpression(funcScope, arg), Ast.NumberExpression(self.wrapperOffset))
+                Ast.AddExpression(Ast.VariableExpression(funcScope, arg), SafeNumber(self.wrapperOffset))
             )
         })
     }, funcScope)))
 
-	-- Array declaration
 	table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(self.rootScope, {self.arrId}, {self:createArray()}));
 end
 
