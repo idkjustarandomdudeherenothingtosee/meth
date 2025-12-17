@@ -15,19 +15,13 @@ local enums = require("prometheus.enums")
 local LuaVersion = enums.LuaVersion;
 local AstKind = Ast.AstKind;
 
--- Bitwise XOR implementation for Lua 5.1 (Fallback for environments without bit32)
+-- Standard Bitwise XOR implementation for Lua 5.1 environments
 local function bxor(a, b)
-    local p = 1
-    local c = 0
+    local p, c = 1, 0
     while a > 0 or b > 0 do
-        local ra = a % 2
-        local rb = b % 2
-        if ra ~= rb then
-            c = c + p
-        end
-        a = math.floor(a / 2)
-        b = math.floor(b / 2)
-        p = p * 2
+        local ra, rb = a % 2, b % 2
+        if ra ~= rb then c = c + p end
+        a, b, p = math.floor(a / 2), math.floor(b / 2), p * 2
     end
     return c
 end
@@ -37,18 +31,66 @@ ConstantArray.Description = "Extracts constants into a XOR-encoded, symbolic arr
 ConstantArray.Name = "Constant Array (Luau Safe)";
 
 ConstantArray.SettingsDescriptor = {
-    -- [Existing settings: Treshold, StringsOnly, Shuffle, Rotate, etc.]
-	Treshold = { name = "Treshold", type = "number", default = 1 },
-	StringsOnly = { name = "StringsOnly", type = "boolean", default = false },
-	Shuffle = { name = "Shuffle", type = "boolean", default = true },
-	Rotate = { name = "Rotate", type = "boolean", default = true },
-	LocalWrapperTreshold = { name = "LocalWrapperTreshold", type = "number", default = 1 },
-	LocalWrapperCount = { name = "LocalWrapperCount", type = "number", default = 0 },
-	LocalWrapperArgCount = { name = "LocalWrapperArgCount", type = "number", default = 10 },
-	MaxWrapperOffset = { name = "MaxWrapperOffset", type = "number", default = 65535 },
+	Treshold = {
+		name = "Treshold",
+		description = "The relative amount of nodes that will be affected",
+		type = "number",
+		default = 1,
+		min = 0,
+		max = 1,
+	},
+	StringsOnly = {
+		name = "StringsOnly",
+		description = "Wether to only Extract Strings",
+		type = "boolean",
+		default = false,
+	},
+	Shuffle = {
+		name = "Shuffle",
+		description = "Wether to shuffle the order of Elements in the Array",
+		type = "boolean",
+		default = true,
+	},
+	Rotate = {
+		name = "Rotate",
+		description = "Wether to rotate the String Array by a specific (random) amount. This will be undone on runtime.",
+		type = "boolean",
+		default = true,
+	},
+	LocalWrapperTreshold = {
+		name = "LocalWrapperTreshold",
+		description = "The relative amount of nodes functions, that will get local wrappers",
+		type = "number",
+		default = 1,
+		min = 0,
+		max = 1,
+	},
+	LocalWrapperCount = {
+		name = "LocalWrapperCount",
+		description = "The number of Local wrapper Functions per scope.",
+		type = "number",
+		min = 0,
+		max = 512,
+		default = 0,
+	},
+	LocalWrapperArgCount = {
+		name = "LocalWrapperArgCount",
+		description = "The number of Arguments to the Local wrapper Functions",
+		type = "number",
+		min = 1,
+		default = 10,
+		max = 200,
+	},
+	MaxWrapperOffset = {
+		name = "MaxWrapperOffset",
+		description = "The Max Offset for the Wrapper Functions",
+		type = "number",
+		min = 0,
+		default = 65535,
+	},
 }
 
--- Symbol Mapping Table (Symbols chosen for maximum Luau/Lua compatibility)
+-- Symbol Mapping Table (Luau-safe character set)
 local SYMBOL_MAP = {
     ['0'] = '!', ['1'] = '@', ['2'] = '#', ['3'] = '$', ['4'] = '%', ['5'] = '^', ['6'] = '&', ['7'] = '*', ['8'] = '(', ['9'] = ')',
     ['a'] = 'Q', ['b'] = 'W', ['c'] = 'E', ['d'] = 'R', ['e'] = 'T', ['f'] = 'Y', ['g'] = 'U', ['h'] = 'I', ['i'] = 'O', ['j'] = 'P',
@@ -60,16 +102,75 @@ local SYMBOL_MAP = {
     ['+'] = '_', ['/'] = '-', ['='] = '+', [' '] = ' ',
 }
 
+local function callNameGenerator(generatorFunction, ...)
+	if(type(generatorFunction) == "table") then
+		generatorFunction = generatorFunction.generateName;
+	end
+	return generatorFunction(...);
+end
+
 function ConstantArray:init(settings)
     self.xorKey = math.random(1, 255);
+end
+
+function ConstantArray:addConstant(value)
+	if(self.lookup[value]) then return end
+	local idx = #self.constants + 1;
+	self.constants[idx] = value;
+	self.lookup[value] = idx;
+end
+
+function ConstantArray:getConstant(value, data)
+	if(self.lookup[value]) then
+		return self:indexing(self.lookup[value], data)
+	end
+	self:addConstant(value)
+	return self:indexing(#self.constants, data);
+end
+
+function ConstantArray:indexing(index, data)
+	if self.LocalWrapperCount > 0 and data.functionData.local_wrappers then
+		local wrappers = data.functionData.local_wrappers;
+		local wrapper = wrappers[math.random(#wrappers)];
+		local args = {};
+		local ofs = index - self.wrapperOffset - wrapper.offset;
+		for i = 1, self.LocalWrapperArgCount do
+			args[i] = (i == wrapper.arg) and Ast.NumberExpression(ofs) or Ast.NumberExpression(math.random(ofs - 100, ofs + 100));
+		end
+		data.scope:addReferenceToHigherScope(wrappers.scope, wrappers.id);
+		return Ast.FunctionCallExpression(Ast.IndexExpression(Ast.VariableExpression(wrappers.scope, wrappers.id), Ast.StringExpression(wrapper.index)), args);
+	else
+		data.scope:addReferenceToHigherScope(self.rootScope, self.wrapperId);
+		return Ast.FunctionCallExpression(Ast.VariableExpression(self.rootScope, self.wrapperId), {Ast.NumberExpression(index - self.wrapperOffset)});
+	end
+end
+
+function ConstantArray:encode(str)
+    local xored_parts = {};
+    for i = 1, #str do
+        table.insert(xored_parts, string.char(bxor(string.byte(str, i), self.xorKey)));
+    end
+    local xored_string = table.concat(xored_parts);
+    local symbolic_parts = {};
+    for i = 1, #xored_string do
+        local b = string.byte(xored_string, i);
+        local char = string.char(b);
+        local symbol = SYMBOL_MAP[char];
+        if symbol then
+            table.insert(symbolic_parts, symbol);
+        elseif b < 32 or b > 126 or char == "\\" or char == "\"" or char == "'" then
+            table.insert(symbolic_parts, string.format("\\%03d", b));
+        else
+            table.insert(symbolic_parts, char);
+        end
+    end
+    return table.concat(symbolic_parts);
 end
 
 function ConstantArray:createArray()
 	local entries = {};
 	for i, v in ipairs(self.constants) do
-		if type(v) == "string" then
-			v = self:encode(v);
-		end
+		if type(v) == "string" then v = self:encode(v) end
 		entries[i] = Ast.TableEntry(Ast.ConstantNode(v));
 	end
 	return Ast.TableConstructorExpression(entries);
@@ -80,23 +181,14 @@ function ConstantArray:addDecodeCode(ast)
     for k, v in pairs(SYMBOL_MAP) do
         table.insert(symbolArr, Ast.KeyedTableEntry(Ast.StringExpression(v), Ast.StringExpression(k)))
     end
-    util.shuffle(symbolArr) 
-    
+    util.shuffle(symbolArr)
     local mapAst = Ast.LocalVariableDeclaration(self.rootScope, {self.mapId}, {Ast.TableConstructorExpression(symbolArr)})
     table.insert(ast.body.statements, 1, mapAst)
 
 	local xorDecodeCode = [[
 	do ]] .. table.concat(util.shuffle{
-		"local arr = ARR;",
-		"local type = type;",
-		"local len = string.len;",
-		"local sub = string.sub;",
-		"local char = string.char;",
-		"local concat = table.concat;",
-		"local map = REV_MAP;",
-        "local xorKey = XOR_KEY;"
+		"local arr = ARR;", "local map = REV_MAP;", "local xorKey = XOR_KEY;"
 	}) .. [[
-        -- Safety Check: Luau environment might have bit32 or need fallback
         local bxor = (bit32 and bit32.bxor) or function(a, b) 
             local p, c = 1, 0
             while a > 0 or b > 0 do
@@ -109,40 +201,21 @@ function ConstantArray:addDecodeCode(ast)
 
 		if type(arr) == "table" and type(map) == "table" then
             for i = 1, #arr do
-                local encoded_data = arr[i];
-                if type(encoded_data) == "string" then
-                    local xored_string = "";
-                    local j = 1;
-                    while j <= len(encoded_data) do
-                        local char_at = sub(encoded_data, j, j);
-                        local original_char = map[char_at];
-                        
-                        if original_char then
-                            xored_string = xored_string .. original_char;
-                            j = j + 1;
-                        elseif char_at == "\\" then
-                            -- Safety: Handle Luau/Lua numeric escapes (\xxx)
-                            local byte_str = sub(encoded_data, j + 1, j + 3);
-                            local byte_val = tonumber(byte_str);
-                            if byte_val then
-                                xored_string = xored_string .. char(byte_val);
-                                j = j + 4;
-                            else
-                                xored_string = xored_string .. char_at;
-                                j = j + 1;
-                            end
-                        else
-                            xored_string = xored_string .. char_at;
-                            j = j + 1; 
-                        end
+                local data = arr[i];
+                if type(data) == "string" then
+                    local xored = ""; local j = 1;
+                    while j <= #data do
+                        local c = string.sub(data, j, j);
+                        local orig = map[c];
+                        if orig then xored = xored .. orig; j = j + 1;
+                        elseif c == "\\" then
+                            local b = tonumber(string.sub(data, j + 1, j + 3));
+                            if b then xored = xored .. string.char(b); j = j + 4; else xored = xored .. c; j = j + 1; end
+                        else xored = xored .. c; j = j + 1; end
                     end
-
-                    local parts = {}
-                    for k = 1, len(xored_string) do
-                        local byte_value = string.byte(sub(xored_string, k, k));
-                        table.insert(parts, char(bxor(byte_value, xorKey)));
-                    end
-                    arr[i] = concat(parts)
+                    local res = {};
+                    for k = 1, #xored do table.insert(res, string.char(bxor(string.byte(xored, k, k), xorKey))) end
+                    arr[i] = table.concat(res);
                 end
             end
         end
@@ -168,34 +241,6 @@ function ConstantArray:addDecodeCode(ast)
 	table.insert(ast.body.statements, 1, forStat);
 end
 
-function ConstantArray:encode(str)
-    local xored_parts = {};
-    for i = 1, #str do
-        table.insert(xored_parts, string.char(bxor(string.byte(str, i), self.xorKey)));
-    end
-
-    local xored_string = table.concat(xored_parts);
-    local symbolic_parts = {};
-
-    for i = 1, #xored_string do
-        local b = string.byte(xored_string, i);
-        local char = string.char(b);
-        local symbol = SYMBOL_MAP[char];
-
-        if symbol then
-            table.insert(symbolic_parts, symbol);
-        elseif b < 32 or b > 126 or char == "\\" or char == "\"" or char == "'" then
-            -- SAFETY FOR LUAU: Convert non-printable/unsafe chars to \xxx
-            table.insert(symbolic_parts, string.format("\\%03d", b));
-        else
-            table.insert(symbolic_parts, char);
-        end
-    end
-
-    return table.concat(symbolic_parts);
-end
-
--- [Apply, indexing, getConstant, etc. logic remains consistent with previous version]
 function ConstantArray:apply(ast, pipeline)
 	self.rootScope = ast.body.scope;
 	self.arrId     = self.rootScope:addVariable();
@@ -203,7 +248,6 @@ function ConstantArray:apply(ast, pipeline)
 	self.constants = {};
 	self.lookup    = {};
 
-    -- Extract constants and process array
 	visitast(ast, nil, function(node, data)
 		if math.random() <= self.Treshold then
 			node.__apply_constant_array = true;
@@ -215,12 +259,39 @@ function ConstantArray:apply(ast, pipeline)
 		end
 	end);
 
-	if self.Shuffle then self.constants = util.shuffle(self.constants); self.lookup = {}; for i, v in ipairs(self.constants) do self.lookup[v] = i; end end
+	if self.Shuffle then
+		self.constants = util.shuffle(self.constants);
+		self.lookup = {};
+		for i, v in ipairs(self.constants) do self.lookup[v] = i; end
+	end
+
 	self.wrapperOffset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset);
 	self.wrapperId     = self.rootScope:addVariable();
 
-    -- Finalize AST modifications
+	visitast(ast, function(node, data)
+		if self.LocalWrapperCount > 0 and node.kind == AstKind.Block and node.isFunctionBlock and math.random() <= self.LocalWrapperTreshold then
+			local id = node.scope:addVariable()
+			data.functionData.local_wrappers = { id = id, scope = node.scope };
+			for i = 1, self.LocalWrapperCount do
+				data.functionData.local_wrappers[i] = { arg = math.random(1, self.LocalWrapperArgCount), index = callNameGenerator(pipeline.namegenerator, 8), offset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset) };
+			end
+		end
+	end, function(node, data)
+		if node.__apply_constant_array then
+			local res = (node.kind == AstKind.StringExpression or not self.StringsOnly) and self:getConstant(node.value, data)
+			node.__apply_constant_array = nil; return res;
+		end
+	end);
+
 	self:addDecodeCode(ast);
+    
+    -- Final wrapper function
+    local funcScope = Scope:new(self.rootScope)
+    local arg = funcScope:addVariable()
+    table.insert(ast.body.statements, 1, Ast.LocalFunctionDeclaration(self.rootScope, self.wrapperId, {Ast.VariableExpression(funcScope, arg)}, Ast.Block({
+        Ast.ReturnStatement({Ast.IndexExpression(Ast.VariableExpression(self.rootScope, self.arrId), Ast.AddExpression(Ast.VariableExpression(funcScope, arg), Ast.NumberExpression(self.wrapperOffset)))})
+    }, funcScope)))
+
 	table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(self.rootScope, {self.arrId}, {self:createArray()}));
 end
 
