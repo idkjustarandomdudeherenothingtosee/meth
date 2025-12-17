@@ -25,39 +25,7 @@ local function unlookupify(tb)
 end
 
 local function escape(str)
-	return str:gsub(".", function(char)
-		if char:match("[^ %-~\n\t\a\b\v\r\"\']") then -- Check if non Printable ASCII Character
-			return string.format("\\%03d", string.byte(char))
-		end
-		if(char == "\\") then
-			return "\\\\";
-		end
-		if(char == "\n") then
-			return "\\n";
-		end
-		if(char == "\r") then
-			return "\\r";
-		end
-		if(char == "\t") then
-			return "\\t";
-		end
-		if(char == "\a") then
-			return "\\a";
-		end
-		if(char == "\b") then
-			return "\\b";
-		end
-		if(char == "\v") then
-			return "\\v";
-		end
-		if(char == "\"") then
-			return "\\\"";
-		end
-		if(char == "\'") then
-			return "\\\'";
-		end
-		return char;
-	end)
+    return str
 end
 
 local function chararray(str)
