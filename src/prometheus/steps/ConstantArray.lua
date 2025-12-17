@@ -15,7 +15,7 @@ local enums = require("prometheus.enums")
 local LuaVersion = enums.LuaVersion;
 local AstKind = Ast.AstKind;
 
--- Standard Bitwise XOR implementation for Lua 5.1 environments
+-- Standard Bitwise XOR implementation for Lua 5.1 / Luau fallback
 local function bxor(a, b)
     local p, c = 1, 0
     while a > 0 or b > 0 do
@@ -27,7 +27,7 @@ local function bxor(a, b)
 end
 
 local ConstantArray = Step:extend();
-ConstantArray.Description = "Extracts constants into a XOR-encoded, symbolic array with Luau-safe escaping.";
+ConstantArray.Description = "Extracts constants into a XOR-encoded, symbolic array with Luau-safe escaping and AST protection.";
 ConstantArray.Name = "Constant Array (Luau Safe)";
 
 ConstantArray.SettingsDescriptor = {
@@ -53,7 +53,7 @@ ConstantArray.SettingsDescriptor = {
 	},
 	Rotate = {
 		name = "Rotate",
-		description = "Wether to rotate the String Array by a specific (random) amount. This will be undone on runtime.",
+		description = "Wether to rotate the String Array. This will be undone on runtime.",
 		type = "boolean",
 		default = true,
 	},
@@ -90,7 +90,7 @@ ConstantArray.SettingsDescriptor = {
 	},
 }
 
--- Symbol Mapping Table (Luau-safe character set)
+-- Symbol Mapping Table (Safe printable character set)
 local SYMBOL_MAP = {
     ['0'] = '!', ['1'] = '@', ['2'] = '#', ['3'] = '$', ['4'] = '%', ['5'] = '^', ['6'] = '&', ['7'] = '*', ['8'] = '(', ['9'] = ')',
     ['a'] = 'Q', ['b'] = 'W', ['c'] = 'E', ['d'] = 'R', ['e'] = 'T', ['f'] = 'Y', ['g'] = 'U', ['h'] = 'I', ['i'] = 'O', ['j'] = 'P',
@@ -121,11 +121,10 @@ function ConstantArray:addConstant(value)
 end
 
 function ConstantArray:getConstant(value, data)
-	if(self.lookup[value]) then
-		return self:indexing(self.lookup[value], data)
+	if not self.lookup[value] then
+		self:addConstant(value)
 	end
-	self:addConstant(value)
-	return self:indexing(#self.constants, data);
+	return self:indexing(self.lookup[value], data);
 end
 
 function ConstantArray:indexing(index, data)
@@ -248,12 +247,14 @@ function ConstantArray:apply(ast, pipeline)
 	self.constants = {};
 	self.lookup    = {};
 
+	-- Phase 1: Identify nodes
 	visitast(ast, nil, function(node, data)
 		if math.random() <= self.Treshold then
-			node.__apply_constant_array = true;
 			if node.kind == AstKind.StringExpression then
+				node.__apply_constant_array = true;
 				self:addConstant(node.value);
 			elseif not self.StringsOnly and node.isConstant and node.value ~= nil then
+				node.__apply_constant_array = true;
 				self:addConstant(node.value);
 			end
 		end
@@ -268,30 +269,46 @@ function ConstantArray:apply(ast, pipeline)
 	self.wrapperOffset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset);
 	self.wrapperId     = self.rootScope:addVariable();
 
+	-- Phase 2: Modify AST (Safe Return logic)
 	visitast(ast, function(node, data)
 		if self.LocalWrapperCount > 0 and node.kind == AstKind.Block and node.isFunctionBlock and math.random() <= self.LocalWrapperTreshold then
 			local id = node.scope:addVariable()
 			data.functionData.local_wrappers = { id = id, scope = node.scope };
 			for i = 1, self.LocalWrapperCount do
-				data.functionData.local_wrappers[i] = { arg = math.random(1, self.LocalWrapperArgCount), index = callNameGenerator(pipeline.namegenerator, 8), offset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset) };
+				data.functionData.local_wrappers[i] = { 
+                    arg = math.random(1, self.LocalWrapperArgCount), 
+                    index = callNameGenerator(pipeline.namegenerator, 8), 
+                    offset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset) 
+                };
 			end
 		end
 	end, function(node, data)
 		if node.__apply_constant_array then
-			local res = (node.kind == AstKind.StringExpression or not self.StringsOnly) and self:getConstant(node.value, data)
-			node.__apply_constant_array = nil; return res;
+			node.__apply_constant_array = nil; -- Clear flag
+            
+            local replacement = self:getConstant(node.value, data)
+            if replacement then
+                return replacement -- Replaces node
+            end
 		end
+        return nil -- Keeps original node, preventing AST corruption
 	end);
 
 	self:addDecodeCode(ast);
     
-    -- Final wrapper function
+    -- Main wrapper function declaration
     local funcScope = Scope:new(self.rootScope)
     local arg = funcScope:addVariable()
     table.insert(ast.body.statements, 1, Ast.LocalFunctionDeclaration(self.rootScope, self.wrapperId, {Ast.VariableExpression(funcScope, arg)}, Ast.Block({
-        Ast.ReturnStatement({Ast.IndexExpression(Ast.VariableExpression(self.rootScope, self.arrId), Ast.AddExpression(Ast.VariableExpression(funcScope, arg), Ast.NumberExpression(self.wrapperOffset)))})
+        Ast.ReturnStatement({
+            Ast.IndexExpression(
+                Ast.VariableExpression(self.rootScope, self.arrId), 
+                Ast.AddExpression(Ast.VariableExpression(funcScope, arg), Ast.NumberExpression(self.wrapperOffset))
+            )
+        })
     }, funcScope)))
 
+	-- Array declaration
 	table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(self.rootScope, {self.arrId}, {self:createArray()}));
 end
 
