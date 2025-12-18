@@ -97,13 +97,13 @@ function EncryptStrings:CreateEncrypionService()
     end
 
     local function genCode()
-    local mapstr = "local symMap={"
-    for s, b in pairs(symboltobyte) do
-        mapstr = mapstr .. "['" .. s .. "']=" .. b .. ","
-    end
-    mapstr = mapstr .. "}"
+        local mapstr = "local symMap={"
+        for s, b in pairs(symboltobyte) do
+            mapstr = mapstr .. "['" .. s .. "']=" .. b .. ","
+        end
+        mapstr = mapstr .. "}"
 
-    return [[
+        return [[
 do
 ]] .. mapstr .. [[
 local floor,char,sub=math.floor,string.char,string.sub
@@ -129,14 +129,6 @@ local function get_next_pseudo()
 end
 
 local cache={}
-local STRINGS=setmetatable({}, {
-    __index=function(t, k)
-        if type(k) ~= "number" then return nil end
-        local cached = cache[k]
-        if cached ~= nil then return cached end
-        return nil
-    end
-})
 
 function DECRYPT(str,seed)
     if cache[seed] then return cache[seed] end
@@ -159,7 +151,7 @@ function DECRYPT(str,seed)
     return result
 end
 end]]
-end
+    end
 
     return { encrypt = encrypt, genCode = genCode }
 end
@@ -169,39 +161,24 @@ function EncryptStrings:apply(ast, pipeline)
     local newAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua51 }):parse(enc.genCode())
     local dostat = newAst.body.statements[1]
 
-    local scope = ast.body.scope
-    local decryptVar, stringsVar = scope:addVariable(), scope:addVariable()
-
-    dostat.body.scope:setParent(scope)
-
-    visitast(newAst, nil, function(node)
-        if node.kind == AstKind.FunctionDeclaration and node.scope:getVariableName(node.id) == "DECRYPT" then
-            node.id = decryptVar
-        elseif (node.kind == AstKind.AssignmentVariable or node.kind == AstKind.VariableExpression)
-            and node.scope:getVariableName(node.id) == "STRINGS" then
-            node.id = stringsVar
-        end
-    end)
-
-    -- insert do block first
+    -- Insert the decryption code block at the beginning
     table.insert(ast.body.statements, 1, dostat)
-    -- then insert local assignment AFTER the function exists
-    table.insert(ast.body.statements, 2,
-        Ast.LocalVariableDeclaration(scope, { decryptVar, stringsVar }, {})
-    )
 
+    -- Replace all string literals with calls to DECRYPT
     visitast(ast, nil, function(node)
         if node.kind == AstKind.StringExpression and not node.IsGenerated then
-            local e, s = enc.encrypt(node.value)
-            local call = Ast.IndexExpression(
-                Ast.VariableExpression(scope, stringsVar),
-                Ast.FunctionCallExpression(
-                    Ast.VariableExpression(scope, decryptVar),
-                    { Ast.StringExpression(e), Ast.NumberExpression(s) }
-                )
+            local encrypted, seed = enc.encrypt(node.value)
+            
+            -- Create a function call to DECRYPT(encrypted_string, seed)
+            local decryptCall = Ast.FunctionCallExpression(
+                Ast.Identifier("DECRYPT"),
+                { 
+                    Ast.StringExpression(encrypted), 
+                    Ast.NumberExpression(seed) 
+                }
             )
-            call.IsGenerated = true
-            return call
+            decryptCall.IsGenerated = true
+            return decryptCall
         end
     end)
 end
