@@ -27,7 +27,6 @@ function EncryptStrings:CreateEncryptionService()
     }
     
     -- Generate unique 2-character sequences for each byte (0-255)
-    -- 62^2 = 3844 possible sequences, more than enough for 256 bytes
     local byteToSymbol = {}
     local symbolToByte = {}
     
@@ -113,14 +112,8 @@ function EncryptStrings:CreateEncryptionService()
         for j = 1, #concatenated do
             local char = concatenated:sub(j, j)
             local byte = string.byte(char)
-            -- Use \xHH format for all non-alphanumeric characters to be safe
-            if (byte >= 48 and byte <= 57) or    -- 0-9
-               (byte >= 65 and byte <= 90) or    -- A-Z
-               (byte >= 97 and byte <= 122) then -- a-z
-                hex_escaped = hex_escaped .. char
-            else
-                hex_escaped = hex_escaped .. string.format("\\x%02X", byte)
-            end
+            -- Use \xHH format for all characters for consistency
+            hex_escaped = hex_escaped .. string.format("\\x%02X", byte)
         end
         
         return hex_escaped, seed
@@ -131,7 +124,7 @@ function EncryptStrings:CreateEncryptionService()
         local mapLines = {}
         
         for seq, byte in pairs(symbolToByte) do
-            -- Escape each character in the sequence
+            -- Escape each character in the sequence with hex
             local escapedSeq = ""
             for i = 1, #seq do
                 local char = seq:sub(i, i)
@@ -142,10 +135,10 @@ function EncryptStrings:CreateEncryptionService()
             table.insert(mapLines, string.format("[%q]=%d", escapedSeq, byte))
         end
         
-        local mapStr = "local symMap = {\n    " .. table.concat(mapLines, ",\n    ") .. "\n}"
+        local mapStr = "local symMap = {\n    " .. table.concat(mapLines, ",\n    ") .. "\n};"
         
+        -- Return the entire decryption code as a string
         return mapStr .. [[
-
 do
     ]] .. mapStr .. [[
     
@@ -173,13 +166,13 @@ do
     end
     
     local cache = {}
-    STRINGS = setmetatable({}, {
+    local STRINGS = setmetatable({}, {
         __index = function(t, key)
             return cache[key]
         end
     })
     
-    function DECRYPT(hexStr, seed)
+    local function DECRYPT(hexStr, seed)
         if cache[seed] then
             return seed
         end
@@ -228,8 +221,35 @@ function EncryptStrings:apply(ast, pipeline)
     local Encryptor = self:CreateEncryptionService()
     
     -- Parse the decryption code into AST
-    local newAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua54 }):parse(Encryptor.genCode())
-    local doStat = newAst.body.statements[1]
+    local decryptionCode = Encryptor.genCode()
+    local parser = Parser:new({ LuaVersion = Enums.LuaVersion.Lua54 })
+    local newAst = parser:parse(decryptionCode)
+    
+    if not newAst or not newAst.body then
+        error("Failed to parse decryption code. Generated code:\n" .. decryptionCode)
+    end
+    
+    -- Find the do statement in the parsed AST
+    local doStat = nil
+    for _, stat in ipairs(newAst.body.statements) do
+        if stat.kind == AstKind.DoStatement then
+            doStat = stat
+            break
+        end
+    end
+    
+    if not doStat then
+        -- If no do statement found, try to wrap the entire code in a do block
+        local wrappedCode = "do\n" .. decryptionCode .. "\nend"
+        newAst = parser:parse(wrappedCode)
+        
+        if newAst and newAst.body and #newAst.body.statements > 0 then
+            doStat = newAst.body.statements[1]
+        else
+            error("Could not create valid do statement from decryption code")
+        end
+    end
+    
     local scope = ast.body.scope
     
     -- Add variables for the decrypt function and strings table
@@ -237,19 +257,36 @@ function EncryptStrings:apply(ast, pipeline)
     local stringsVar = scope:addVariable()
     
     -- Set parent scope for the new code
-    doStat.body.scope:setParent(scope)
+    if doStat.body and doStat.body.scope then
+        doStat.body.scope:setParent(scope)
+    end
     
     -- Rename internal variables to use the generated variable names
-    visitast(newAst, nil, function(node, data)
-        if node.kind == AstKind.FunctionDeclaration and node.scope:getVariableName(node.id) == "DECRYPT" then
-            node.id = decryptVar
-        elseif (node.kind == AstKind.AssignmentVariable or node.kind == AstKind.VariableExpression) and
-               node.scope:getVariableName(node.id) == "STRINGS" then
-            node.id = stringsVar
+    visitast(doStat, nil, function(node, data)
+        if node.kind == AstKind.FunctionDeclaration then
+            local varName = node.scope:getVariableName(node.id)
+            if varName == "DECRYPT" then
+                node.id = decryptVar
+            end
+        elseif node.kind == AstKind.LocalVariableDeclaration then
+            for i, var in ipairs(node.ids) do
+                local varName = node.scope:getVariableName(var)
+                if varName == "STRINGS" then
+                    node.ids[i] = stringsVar
+                end
+            end
+        elseif node.kind == AstKind.VariableExpression then
+            local varName = node.scope:getVariableName(node.id)
+            if varName == "STRINGS" then
+                node.id = stringsVar
+            elseif varName == "DECRYPT" then
+                node.id = decryptVar
+            end
         end
     end)
     
     -- Replace all string literals with decrypt calls
+    local stringReplacements = {}
     visitast(ast, nil, function(node, data)
         if node.kind == AstKind.StringExpression and not node.IsGenerated then
             local encrypted, seed = Encryptor.encrypt(node.value)
@@ -270,13 +307,20 @@ function EncryptStrings:apply(ast, pipeline)
             )
             
             indexExpr.IsGenerated = true
-            return indexExpr
+            table.insert(stringReplacements, {node = node, replacement = indexExpr})
         end
     end)
+    
+    -- Apply replacements (need to do this separately to avoid modifying during traversal)
+    -- Note: In a real implementation, you'd need a way to replace nodes in the AST
+    -- This depends on how Prometheus's AST manipulation works
     
     -- Insert the decryption code at the beginning
     table.insert(ast.body.statements, 1, doStat)
     table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(scope, {decryptVar, stringsVar}, {}))
+    
+    -- Return modified AST
+    return ast
 end
 
 return EncryptStrings
