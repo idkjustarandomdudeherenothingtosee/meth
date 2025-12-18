@@ -130,7 +130,7 @@ end
 
 local cache={}
 
-function DECRYPT(str,seed)
+local function DECRYPT(str,seed)
     if cache[seed] then return cache[seed] end
     
     state_45=seed%35184372088832
@@ -150,6 +150,8 @@ function DECRYPT(str,seed)
     cache[seed]=result
     return result
 end
+
+return DECRYPT
 end]]
     end
 
@@ -161,24 +163,29 @@ function EncryptStrings:apply(ast, pipeline)
     local newAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua51 }):parse(enc.genCode())
     local dostat = newAst.body.statements[1]
 
-    -- Insert the decryption code block at the beginning
+    local scope = ast.body.scope
+    local decryptVar = scope:addVariable("DECRYPT")
+    
+    -- Insert do block first
     table.insert(ast.body.statements, 1, dostat)
+    
+    -- Add local DECRYPT assignment after do block
+    table.insert(ast.body.statements, 2,
+        Ast.LocalVariableDeclaration(scope, { decryptVar }, {
+            Ast.VariableExpression(dostat.body.scope, dostat.body.scope:getVariable("DECRYPT"))
+        })
+    )
 
     -- Replace all string literals with calls to DECRYPT
     visitast(ast, nil, function(node)
         if node.kind == AstKind.StringExpression and not node.IsGenerated then
-            local encrypted, seed = enc.encrypt(node.value)
-            
-            -- Create a function call to DECRYPT(encrypted_string, seed)
-            local decryptCall = Ast.FunctionCallExpression(
-                Ast.Identifier("DECRYPT"),
-                { 
-                    Ast.StringExpression(encrypted), 
-                    Ast.NumberExpression(seed) 
-                }
+            local e, s = enc.encrypt(node.value)
+            local call = Ast.FunctionCallExpression(
+                Ast.VariableExpression(scope, decryptVar),
+                { Ast.StringExpression(e), Ast.NumberExpression(s) }
             )
-            decryptCall.IsGenerated = true
-            return decryptCall
+            call.IsGenerated = true
+            return call
         end
     end)
 end
