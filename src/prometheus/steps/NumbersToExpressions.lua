@@ -105,6 +105,7 @@ function EncryptStrings:CreateEncrypionService()
 
         return [[
 do
+local DECRYPT
 ]] .. mapstr .. [[
 local floor,char,sub=math.floor,string.char,string.sub
 local state_45,state_8,prev_values=0,2,{}
@@ -167,44 +168,15 @@ function EncryptStrings:apply(ast, pipeline)
     -- Insert do block first
     table.insert(ast.body.statements, 1, dostat)
 
-    -- Create a local variable declaration for DECRYPT
-    -- We'll create it as nil initially and assign later
+    -- Add local declaration after do block
     table.insert(ast.body.statements, 2,
         Ast.LocalVariableDeclaration(scope, { decryptVar }, {})
     )
 
-    -- Now we need to find where DECRYPT is defined in the do-block and modify it
-    -- First, let's find the function declaration in the do-block
-    local functionDeclaration = nil
-    visitast(dostat, nil, function(node)
-        if node.kind == AstKind.FunctionDeclaration then
-            local name = node.scope:getVariableName(node.id)
-            if name == "DECRYPT" then
-                functionDeclaration = node
-            end
-        end
-    end)
-
-    -- If we found the DECRYPT function, we need to:
-    -- 1. Change it to be assigned to our local variable
-    -- 2. Remove the original function declaration
-    if functionDeclaration then
-        -- Create an assignment statement inside the do-block
-        local assignment = Ast.AssignmentStatement(
-            dostat.body.scope,
-            { Ast.VariableExpression(scope, decryptVar) },
-            { Ast.FunctionExpression(functionDeclaration.args, functionDeclaration.body) }
-        )
-        
-        -- Remove the function declaration and add the assignment
-        -- We need to modify the do-block's statements
-        for i, stmt in ipairs(dostat.body.statements) do
-            if stmt == functionDeclaration then
-                dostat.body.statements[i] = assignment
-                break
-            end
-        end
-    end
+    -- The do-block already declares DECRYPT as a local and defines it
+    // We just need to use our local variable to reference it
+    // Since DECRYPT is already declared locally in the do-block,
+    // we can just use our variable to call it
 
     -- Replace all string literals with calls to DECRYPT
     visitast(ast, nil, function(node)
