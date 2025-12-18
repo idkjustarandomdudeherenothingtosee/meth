@@ -97,13 +97,13 @@ function EncryptStrings:CreateEncrypionService()
     end
 
     local function genCode()
-        local mapstr = "local symMap={"
-        for s, b in pairs(symboltobyte) do
-            mapstr = mapstr .. "['" .. s .. "']=" .. b .. ","
-        end
-        mapstr = mapstr .. "}"
+    local mapstr = "local symMap={"
+    for s, b in pairs(symboltobyte) do
+        mapstr = mapstr .. "['" .. s .. "']=" .. b .. ","
+    end
+    mapstr = mapstr .. "}"
 
-        return [[
+    return [[
 do
 ]] .. mapstr .. [[
 local floor,char,sub=math.floor,string.char,string.sub
@@ -129,10 +129,18 @@ local function get_next_pseudo()
 end
 
 local cache={}
-STRINGS=setmetatable({}, {__index=cache})
+local STRINGS=setmetatable({}, {
+    __index=function(t, k)
+        if type(k) ~= "number" then return nil end
+        local cached = cache[k]
+        if cached ~= nil then return cached end
+        return nil
+    end
+})
 
 function DECRYPT(str,seed)
-    if cache[seed] then return seed end
+    if cache[seed] then return cache[seed] end
+    
     state_45=seed%35184372088832
     state_8=seed%255+2
     prev_values={}
@@ -143,15 +151,15 @@ function DECRYPT(str,seed)
         local sym=sub(str,i,i+2)
         local eb=symMap[sym] or 0
         prev=(eb+get_next_pseudo()+prev)%256
-        prev=floor(prev)%256
         res[#res+1]=char(prev)
     end
 
-    cache[seed]=table.concat(res)
-    return seed
+    local result=table.concat(res)
+    cache[seed]=result
+    return result
 end
 end]]
-    end
+end
 
     return { encrypt = encrypt, genCode = genCode }
 end
