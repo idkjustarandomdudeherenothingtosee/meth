@@ -16,6 +16,28 @@ local util = require("prometheus.util");
 local visitast = require("prometheus.visitast")
 local randomStrings = require("prometheus.randomStrings")
 
+local function escapeStringForLua(str)
+    local result = {}
+    for i = 1, #str do
+        local byte = str:byte(i)
+        -- Use hexadecimal escapes for all non-printable ASCII
+        if byte < 32 or byte >= 127 then
+            table.insert(result, string.format("\\x%02X", byte))
+        else
+            -- Escape backslashes and quotes
+            local char = str:sub(i, i)
+            if char == "\\" then
+                table.insert(result, "\\\\")
+            elseif char == "\"" then
+                table.insert(result, "\\\"")
+            else
+                table.insert(result, char)
+            end
+        end
+    end
+    return table.concat(result)
+end
+
 local lookupify = util.lookupify;
 local AstKind = Ast.AstKind;
 
@@ -1885,7 +1907,8 @@ function Compiler:compileExpression(expression, funcDepth, numReturns)
         for i=1, numReturns, 1 do
             regs[i] = self:allocRegister();
             if(i == 1) then
-                self:addStatement(self:setRegister(scope, regs[i], Ast.StringExpression(expression.value)), {regs[i]}, {}, false);
+                local escapedValue = escapeStringForLua(expression.value)
+                self:addStatement(self:setRegister(scope, regs[i], Ast.StringExpression(escapedValue)), {regs[i]}, {}, false);
             else
                 self:addStatement(self:setRegister(scope, regs[i], Ast.NilExpression()), {regs[i]}, {}, false);
             end
