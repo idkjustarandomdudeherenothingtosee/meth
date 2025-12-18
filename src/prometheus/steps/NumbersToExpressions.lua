@@ -34,7 +34,6 @@ function EncryptStrings:CreateEncrypionService()
     local secret_key_7 = math.random(0, 127)
     local secret_key_44 = math.random(0, 17592186044415)
     local secret_key_8 = math.random(0, 255)
-
     local floor = math.floor
 
     local function primitive_root_257(idx)
@@ -88,14 +87,12 @@ function EncryptStrings:CreateEncrypionService()
         set_seed(seed)
         local out = {}
         local prev = secret_key_8
-
         for i = 1, #str do
             local b = string.byte(str, i)
             local e = (b - (get_next_pseudo_random_byte() + prev)) % 256
             out[#out + 1] = bytetosymbol[e]
             prev = b
         end
-
         return table.concat(out), seed
     end
 
@@ -178,6 +175,13 @@ function EncryptStrings:apply(ast, pipeline)
         end
     end)
 
+    -- insert do block first
+    table.insert(ast.body.statements, 1, dostat)
+    -- then insert local assignment AFTER the function exists
+    table.insert(ast.body.statements, 2,
+        Ast.LocalVariableDeclaration(scope, { decryptVar, stringsVar }, {})
+    )
+
     visitast(ast, nil, function(node)
         if node.kind == AstKind.StringExpression and not node.IsGenerated then
             local e, s = enc.encrypt(node.value)
@@ -192,11 +196,6 @@ function EncryptStrings:apply(ast, pipeline)
             return call
         end
     end)
-
-    table.insert(ast.body.statements, 1,
-        Ast.LocalVariableDeclaration(scope, { decryptVar, stringsVar }, {})
-    )
-    table.insert(ast.body.statements, 2, dostat)
 end
 
 return EncryptStrings
