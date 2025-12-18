@@ -1,351 +1,180 @@
--- EncryptStrings.lua - Production string encryption for Lua 5.1-5.4 and Luau
+-- EncryptStrings.lua - Symbol Mapping Edition
+-- Maps every encrypted byte to a unique sequence of special characters.
+
 local Step = require("prometheus.step")
 local Ast = require("prometheus.ast")
+local Scope = require("prometheus.scope")
+local Parser = require("prometheus.parser")
+local Enums = require("prometheus.enums")
 local visitast = require("prometheus.visitast")
+local util = require("prometheus.util")
 local AstKind = Ast.AstKind
 
 local EncryptStrings = Step:extend()
-EncryptStrings.Description = "Encrypts string literals using multiple layers of encryption"
-EncryptStrings.Name = "String Encryption"
+EncryptStrings.Description = "Encrypts strings and converts bytes into unique symbol sequences."
+EncryptStrings.Name = "Encrypt Strings (Symbolic)"
 
--- XOR encryption with rotating key
-local function xor_encrypt(data, key)
-    local encrypted = {}
-    local key_len = #key
-    for i = 1, #data do
-        local byte = data:byte(i)
-        local key_byte = key:byte((i - 1) % key_len + 1)
-        encrypted[i] = string.char(bit32.bxor(byte, key_byte))
-    end
-    return table.concat(encrypted)
-end
+function EncryptStrings:init(settings) end
 
--- Base64 encoding (Lua 5.1-5.4 compatible)
-local b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-local function base64_encode(data)
-    local bytes = {data:byte(1, -1)}
-    local result = {}
+function EncryptStrings:CreateEncrypionService()
+    local usedSeeds = {}
+    local syms = {"!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "-", "+", "=", "{", "}"}
     
-    for i = 1, #bytes, 3 do
-        local a, b, c = bytes[i], bytes[i + 1] or 0, bytes[i + 2] or 0
-        local n = a * 0x10000 + b * 0x100 + c
-        
-        result[#result + 1] = b64chars:sub(math.floor(n / 0x40000) % 64 + 1, math.floor(n / 0x40000) % 64 + 1)
-        result[#result + 1] = b64chars:sub(math.floor(n / 0x1000) % 64 + 1, math.floor(n / 0x1000) % 64 + 1)
-        result[#result + 1] = b64chars:sub(math.floor(n / 0x40) % 64 + 1, math.floor(n / 0x40) % 64 + 1)
-        result[#result + 1] = b64chars:sub(n % 64 + 1, n % 64 + 1)
-    end
-    
-    local padding = 3 - (#bytes + 2) % 3
-    if padding == 2 then
-        result[#result] = '='
-        result[#result - 1] = '='
-    elseif padding == 1 then
-        result[#result] = '='
-    end
-    
-    return table.concat(result)
-end
-
--- Byte array encoding for Lua 5.1-5.4 compatibility
-local function byte_array_encode(data)
-    local bytes = {}
-    for i = 1, #data do
-        bytes[#bytes + 1] = string.format("0x%02X", data:byte(i))
-    end
-    return "{" .. table.concat(bytes, ",") .. "}"
-end
-
--- Caesar cipher with variable shift
-local function caesar_cipher(data, shift)
-    local result = {}
-    for i = 1, #data do
-        local byte = data:byte(i)
-        result[i] = string.char((byte + shift) % 256)
-    end
-    return table.concat(result)
-end
-
--- Generate a runtime decryption key (obfuscated)
-local function generate_decryption_key()
-    local keys = {
-        "0x6B,0x65,0x79,0x31",  -- "key1"
-        "0x73,0x65,0x63,0x72,0x65,0x74",  -- "secret"
-        "0x70,0x61,0x73,0x73,0x77,0x6F,0x72,0x64",  -- "password"
-        "0x65,0x6E,0x63,0x72,0x79,0x70,0x74",  -- "encrypt"
-    }
-    
-    local key_parts = {}
-    for _, key in ipairs(keys) do
-        key_parts[#key_parts + 1] = "string.char(" .. key .. ")"
-    end
-    
-    return table.concat(key_parts, "..")
-end
-
--- Create decryption function AST
-local function create_decryption_function()
-    -- Generate a unique function name to avoid collisions
-    local func_name = "__decrypt_" .. math.random(10000, 99999)
-    
-    -- Build the decryption function source code
-    local source = [[
-local function ]] .. func_name .. [[(encrypted, key_index)
-    -- XOR decryption with multiple keys
-    local keys = {
-        ]] .. generate_decryption_key() .. [[,
-        ]] .. generate_decryption_key() .. [[,
-        ]] .. generate_decryption_key() .. [[
-    }
-    
-    local key = keys[(key_index or 1) % #keys + 1]
-    local result = {}
-    
-    for i = 1, #encrypted do
-        local e = encrypted:byte(i)
-        local k = key:byte((i - 1) % #key + 1)
-        result[i] = string.char(bit32.bxor(e, k))
-    end
-    
-    return table.concat(result)
-end
-
-local function ]] .. func_name .. [[_b64(data, key_idx)
-    -- Base64 decode then decrypt
-    local b64_chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    local char_to_value = {}
-    for i = 1, 64 do
-        char_to_value[b64_chars:sub(i, i)] = i - 1
-    end
-    
-    -- Remove padding
-    data = data:gsub('=', '')
-    
-    local bytes = {}
-    for i = 1, #data, 4 do
-        local a = char_to_value[data:sub(i, i)] or 0
-        local b = char_to_value[data:sub(i + 1, i + 1)] or 0
-        local c = char_to_value[data:sub(i + 2, i + 2)] or 0
-        local d = char_to_value[data:sub(i + 3, i + 3)] or 0
-        
-        local n = a * 0x40000 + b * 0x1000 + c * 0x40 + d
-        
-        bytes[#bytes + 1] = string.char(math.floor(n / 0x10000) % 256)
-        bytes[#bytes + 1] = string.char(math.floor(n / 0x100) % 256)
-        bytes[#bytes + 1] = string.char(n % 256)
-    end
-    
-    local encoded = table.concat(bytes)
-    -- Remove null bytes from padding
-    encoded = encoded:gsub('%z+$', '')
-    
-    return ]] .. func_name .. [[(encoded, key_idx)
-end
-
-local function ]] .. func_name .. [[_bytes(byte_array, key_idx, shift)
-    -- Convert byte array to string then decrypt
-    local bytes = {}
-    for byte in byte_array:gmatch('0x(%x%x)') do
-        bytes[#bytes + 1] = string.char(tonumber(byte, 16))
-    end
-    
-    local data = table.concat(bytes)
-    
-    -- Reverse Caesar cipher if shift was applied
-    if shift then
-        local result = {}
-        for i = 1, #data do
-            local byte = data:byte(i)
-            result[i] = string.char((byte - shift) % 256)
+    -- Generate a unique 3-character symbol sequence for every byte (0-255)
+    local byteToSymbol = {}
+    local symbolToByte = {}
+    local count = 0
+    for i = 1, #syms do
+        for j = 1, #syms do
+            for k = 1, #syms do
+                if count <= 255 then
+                    local seq = syms[i] .. syms[j] .. syms[k]
+                    byteToSymbol[count] = seq
+                    symbolToByte[seq] = count
+                    count = count + 1
+                end
+            end
         end
-        data = table.concat(result)
     end
-    
-    return ]] .. func_name .. [[(data, key_idx)
-end
 
-return {
-    xor = ]] .. func_name .. [[,
-    b64 = ]] .. func_name .. [[_b64,
-    bytes = ]] .. func_name .. [[_bytes
-}
-]]
-    
-    return source, func_name
-end
+    local secret_key_6 = math.random(0, 63)
+    local secret_key_7 = math.random(0, 127)
+    local secret_key_44 = math.random(0, 17592186044415)
+    local secret_key_8 = math.random(0, 255)
 
-function EncryptStrings:init(settings)
-    self.settings = settings or {}
-    self.encryption_method = settings.method or "layered"  -- "xor", "base64", "bytes", or "layered"
-    self.obfuscate = settings.obfuscate ~= false
-    self.min_length = settings.min_length or 3  -- Minimum string length to encrypt
-    
-    -- Initialize random seed for key rotation
-    math.randomseed(os.time())
+    local floor = math.floor
+    local function primitive_root_257(idx)
+        local g, m, d = 1, 128, 2 * idx + 1
+        repeat g, m, d = g * g * (d >= m and 3 or 1) % 257, m / 2, d % m until m < 1
+        return g
+    end
+
+    local param_mul_8 = primitive_root_257(secret_key_7)
+    local param_mul_45 = secret_key_6 * 4 + 1
+    local param_add_45 = secret_key_44 * 2 + 1
+    local state_45, state_8 = 0, 2
+    local prev_values = {}
+
+    local function set_seed(seed_53)
+        state_45 = seed_53 % 35184372088832
+        state_8 = seed_53 % 255 + 2
+        prev_values = {}
+    end
+
+    local function get_random_32()
+        state_45 = (state_45 * param_mul_45 + param_add_45) % 35184372088832
+        repeat state_8 = state_8 * param_mul_8 % 257 until state_8 ~= 1
+        local r = state_8 % 32
+        local n = floor(state_45 / 2 ^ (13 - (state_8 - r) / 32)) % 2 ^ 32 / 2 ^ r
+        return floor(n % 1 * 2 ^ 32) + floor(n)
+    end
+
+    local function get_next_pseudo_random_byte()
+        if #prev_values == 0 then
+            local rnd = get_random_32()
+            prev_values = { rnd % 256, floor(rnd / 256) % 256, floor(rnd / 65536) % 256, floor(rnd / 16777216) % 256 }
+        end
+        return table.remove(prev_values)
+    end
+
+    local function encrypt(str)
+        local seed = math.random(0, 35184372088832)
+        set_seed(seed)
+        local out = {}
+        local prevVal = secret_key_8
+        for i = 1, #str do
+            local byte = string.byte(str, i)
+            local encryptedByte = (byte - (get_next_pseudo_random_byte() + prevVal)) % 256
+            table.insert(out, byteToSymbol[encryptedByte])
+            prevVal = byte
+        end
+        return table.concat(out), seed
+    end
+
+    local function genCode()
+        -- Construct the Reverse Symbol Map for the Lua environment
+        local mapStr = "local symMap = {"
+        for seq, byte in pairs(symbolToByte) do
+            mapStr = mapStr .. string.format("['%s']=%d,", seq, byte)
+        end
+        mapStr = mapStr .. "};"
+
+        return [[
+do
+    ]] .. mapStr .. [[
+    local floor, char, sub = math.floor, string.char, string.sub
+    local state_45, state_8, prev_values = 0, 2, {}
+
+    local function get_next_pseudo()
+        if #prev_values == 0 then
+            state_45 = (state_45 * ]] .. param_mul_45 .. [[ + ]] .. param_add_45 .. [[) % 35184372088832
+            repeat state_8 = state_8 * ]] .. param_mul_8 .. [[ % 257 until state_8 ~= 1
+            local r = state_8 % 32
+            local n = floor(state_45 / 2 ^ (13 - (state_8 - r) / 32)) % 2 ^ 32 / 2 ^ r
+            local rnd = floor(n % 1 * 2 ^ 32) + floor(n)
+            prev_values = { rnd % 256, floor(rnd / 256) % 256, floor(rnd / 65536) % 256, floor(rnd / 16777216) % 256 }
+        end
+        return table.remove(prev_values)
+    end
+
+    local cache = {}
+    STRINGS = setmetatable({}, {__index = cache})
+
+    function DECRYPT(str, seed)
+        if cache[seed] then return seed end
+        state_45, state_8, prev_values = seed % 35184372088832, seed % 255 + 2, {}
+        local res, prevVal = {}, ]] .. secret_key_8 .. [[
+        for i = 1, #str, 3 do
+            local sym = sub(str, i, i + 2)
+            local encryptedByte = symMap[sym]
+            prevVal = (encryptedByte + get_next_pseudo() + prevVal) % 256
+            table.insert(res, char(prevVal))
+        end
+        cache[seed] = table.concat(res)
+        return seed
+    end
+end]]
+    end
+
+    return { encrypt = encrypt, genCode = genCode }
 end
 
 function EncryptStrings:apply(ast, pipeline)
-    -- Create decryption function
-    local decrypt_source, func_name = create_decryption_function()
-    local decryption_func_added = false
+    local Encryptor = self:CreateEncrypionService()
+    local newAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua51 }):parse(Encryptor.genCode())
+    local doStat = newAst.body.statements[1]
+    local scope = ast.body.scope
+    local decryptVar, stringsVar = scope:addVariable(), scope:addVariable()
     
-    -- Store all transformations to apply at once
-    local transformations = {}
-    
-    -- Visit AST and collect string transformations
-    visitast(ast, nil, function(node, parent, index)
-        if node.kind == AstKind.StringExpression and node.value then
-            local str_value = node.value
-            
-            -- Skip short strings
-            if #str_value < self.min_length then
-                return
-            end
-            
-            -- Skip strings that look like format patterns
-            if str_value:match("%%[sdgf])") then
-                return
-            end
-            
-            -- Choose encryption method
-            local encrypted_value
-            local call_expression
-            local method = self.encryption_method
-            
-            if method == "layered" then
-                -- Multi-layer encryption
-                local key_index = math.random(1, 3)
-                local shift = math.random(1, 25)
-                
-                -- Layer 1: XOR
-                local xor_key = "encrypt_key_" .. math.random(1000, 9999)
-                local layer1 = xor_encrypt(str_value, xor_key)
-                
-                -- Layer 2: Caesar cipher
-                local layer2 = caesar_cipher(layer1, shift)
-                
-                -- Layer 3: Base64
-                encrypted_value = base64_encode(layer2)
-                
-                -- Create call to decryption function
-                call_expression = Ast.CallExpression(
-                    Ast.Identifier(func_name .. ".b64"),
-                    {
-                        Ast.StringExpression(encrypted_value),
-                        Ast.NumberExpression(key_index),
-                        Ast.NumberExpression(shift)
-                    }
-                )
-                
-            elseif method == "base64" then
-                -- Base64 only
-                local key_index = math.random(1, 3)
-                local xor_key = "key_" .. math.random(100, 999)
-                local xored = xor_encrypt(str_value, xor_key)
-                encrypted_value = base64_encode(xored)
-                
-                call_expression = Ast.CallExpression(
-                    Ast.Identifier(func_name .. ".b64"),
-                    {
-                        Ast.StringExpression(encrypted_value),
-                        Ast.NumberExpression(key_index)
-                    }
-                )
-                
-            elseif method == "bytes" then
-                -- Byte array encoding
-                local key_index = math.random(1, 3)
-                local shift = math.random(1, 25)
-                local xored = xor_encrypt(str_value, "byte_key")
-                local shifted = caesar_cipher(xored, shift)
-                encrypted_value = byte_array_encode(shifted)
-                
-                call_expression = Ast.CallExpression(
-                    Ast.Identifier(func_name .. ".bytes"),
-                    {
-                        Ast.StringExpression(encrypted_value),
-                        Ast.NumberExpression(key_index),
-                        Ast.NumberExpression(shift)
-                    }
-                )
-                
-            else  -- "xor" default
-                -- Simple XOR encryption
-                local key_index = math.random(1, 3)
-                local xor_key = "xor_key_" .. math.random(100, 999)
-                encrypted_value = xor_encrypt(str_value, xor_key)
-                
-                call_expression = Ast.CallExpression(
-                    Ast.Identifier(func_name .. ".xor"),
-                    {
-                        Ast.StringExpression(encrypted_value),
-                        Ast.NumberExpression(key_index)
-                    }
-                )
-            end
-            
-            -- Store transformation
-            if call_expression then
-                table.insert(transformations, {
-                    parent = parent,
-                    index = index,
-                    replacement = call_expression
-                })
-                
-                -- Mark that we need to add the decryption function
-                decryption_func_added = true
-            end
+    doStat.body.scope:setParent(scope)
+
+    -- Rename internal variables for obfuscation
+    visitast(newAst, nil, function(node, data)
+        if node.kind == AstKind.FunctionDeclaration and node.scope:getVariableName(node.id) == "DECRYPT" then
+            node.id = decryptVar
+        elseif (node.kind == AstKind.AssignmentVariable or node.kind == AstKind.VariableExpression) and node.scope:getVariableName(node.id) == "STRINGS" then
+            node.id = stringsVar
         end
     end)
-    
-    -- Apply all transformations
-    for _, trans in ipairs(transformations) do
-        if trans.parent.body then
-            if type(trans.parent.body) == "table" and trans.parent.body.kind then
-                -- Single child
-                trans.parent.body = trans.replacement
-            elseif type(trans.parent.body) == "table" then
-                -- Array of children
-                trans.parent.body[trans.index] = trans.replacement
-            end
-        elseif trans.parent.expression then
-            trans.parent.expression = trans.replacement
-        elseif trans.parent.value then
-            trans.parent.value = trans.replacement
-        end
-    end
-    
-    -- Add decryption function to the beginning of the script
-    if decryption_func_added then
-        -- Parse the decryption function source into AST
-        -- Note: This assumes we have access to a parser in the pipeline
-        -- If not, we'll need to add it as a string literal that gets executed
-        
-        -- For now, create a dummy assignment to mark where decryption code should be inserted
-        local decrypt_var = Ast.VariableDeclaration({
-            Ast.VariableDeclarator(
-                Ast.Identifier("__string_decrypt_func"),
-                Ast.StringExpression(decrypt_source)
+
+    -- Replace String Literals with Decrypt Calls
+    visitast(ast, nil, function(node, data)
+        if node.kind == AstKind.StringExpression and not node.IsGenerated then
+            local encrypted, seed = Encryptor.encrypt(node.value)
+            local call = Ast.IndexExpression(
+                Ast.VariableExpression(scope, stringsVar),
+                Ast.FunctionCallExpression(Ast.VariableExpression(scope, decryptVar), {
+                    Ast.StringExpression(encrypted),
+                    Ast.NumberExpression(seed)
+                })
             )
-        })
-        
-        -- Insert at the beginning of the body
-        if ast.body and type(ast.body) == "table" then
-            if ast.body.kind then
-                -- Single statement body
-                local original = ast.body
-                ast.body = {
-                    decrypt_var,
-                    original
-                }
-            else
-                -- Multiple statements
-                table.insert(ast.body, 1, decrypt_var)
-            end
+            call.IsGenerated = true
+            return call
         end
-    end
-    
-    return ast
+    end)
+
+    table.insert(ast.body.statements, 1, doStat)
+    table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(scope, {decryptVar, stringsVar}, {}))
 end
 
 return EncryptStrings
