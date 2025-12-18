@@ -130,7 +130,7 @@ end
 
 local cache={}
 
-local function DECRYPT(str,seed)
+function DECRYPT(str,seed)
     if cache[seed] then return cache[seed] end
     
     state_45=seed%35184372088832
@@ -150,8 +150,6 @@ local function DECRYPT(str,seed)
     cache[seed]=result
     return result
 end
-
-return DECRYPT
 end]]
     end
 
@@ -164,17 +162,49 @@ function EncryptStrings:apply(ast, pipeline)
     local dostat = newAst.body.statements[1]
 
     local scope = ast.body.scope
-    local decryptVar = scope:addVariable("DECRYPT")
+    local decryptVar = scope:addVariable()
     
     -- Insert do block first
     table.insert(ast.body.statements, 1, dostat)
-    
-    -- Add local DECRYPT assignment after do block
+
+    -- Create a local variable declaration for DECRYPT
+    -- We'll create it as nil initially and assign later
     table.insert(ast.body.statements, 2,
-        Ast.LocalVariableDeclaration(scope, { decryptVar }, {
-            Ast.VariableExpression(dostat.body.scope, dostat.body.scope:getVariable("DECRYPT"))
-        })
+        Ast.LocalVariableDeclaration(scope, { decryptVar }, {})
     )
+
+    -- Now we need to find where DECRYPT is defined in the do-block and modify it
+    -- First, let's find the function declaration in the do-block
+    local functionDeclaration = nil
+    visitast(dostat, nil, function(node)
+        if node.kind == AstKind.FunctionDeclaration then
+            local name = node.scope:getVariableName(node.id)
+            if name == "DECRYPT" then
+                functionDeclaration = node
+            end
+        end
+    end)
+
+    -- If we found the DECRYPT function, we need to:
+    -- 1. Change it to be assigned to our local variable
+    -- 2. Remove the original function declaration
+    if functionDeclaration then
+        -- Create an assignment statement inside the do-block
+        local assignment = Ast.AssignmentStatement(
+            dostat.body.scope,
+            { Ast.VariableExpression(scope, decryptVar) },
+            { Ast.FunctionExpression(functionDeclaration.args, functionDeclaration.body) }
+        )
+        
+        -- Remove the function declaration and add the assignment
+        -- We need to modify the do-block's statements
+        for i, stmt in ipairs(dostat.body.statements) do
+            if stmt == functionDeclaration then
+                dostat.body.statements[i] = assignment
+                break
+            end
+        end
+    end
 
     -- Replace all string literals with calls to DECRYPT
     visitast(ast, nil, function(node)
