@@ -1,195 +1,143 @@
+-- NumbersToExpressions.lua - FIXED VERSION
 local Step = require("prometheus.step")
-local Ast = require("prometheus.ast")
-local Parser = require("prometheus.parser")
-local Enums = require("prometheus.enums")
 local visitast = require("prometheus.visitast")
-local AstKind = Ast.AstKind
+local util = require("prometheus.util")
+local Parser = require("prometheus.parser")
+local Ast = require("prometheus.ast")
 
-local EncryptStrings = Step:extend()
-EncryptStrings.Description = "Encrypts strings and converts bytes into unique symbol sequences."
-EncryptStrings.Name = "Encrypt Strings (Symbolic)"
+local NumbersToExpressions = Step:extend()
+NumbersToExpressions.Description = "Converts numbers into chaotic, multi-layer decimal math strings."
+NumbersToExpressions.Name = "Numbers To Expressions (Chaotic)"
 
-function EncryptStrings:init(settings) end
+NumbersToExpressions.SettingsDescriptor = {
+    Treshold = { type = "number", default = 1 },
+    MaxDepth = { type = "number", default = 4 }
+}
 
-function EncryptStrings:CreateEncrypionService()
-    local syms = {"!","@","#","$","%","^","&","*","(",")","-","+","=","{","}"}
-    local bytetosymbol = {}
-    local symboltobyte = {}
-    local c = 0
+function NumbersToExpressions:init(settings)
+    self.internalParser = Parser:new({ LuaVersion = "Lua51" })
+end
 
-    for i = 1, #syms do
-        for j = 1, #syms do
-            for k = 1, #syms do
-                if c <= 255 then
-                    local s = syms[i] .. syms[j] .. syms[k]
-                    bytetosymbol[c] = s
-                    symboltobyte[s] = c
-                    c = c + 1
+-- Helper to escape Lua string literals
+local function escapeLuaString(str)
+    -- Escape backslashes first (most important!)
+    str = str:gsub("\\", "\\\\")
+    -- Escape quotes
+    str = str:gsub("\"", "\\\"")
+    -- Escape percent signs in string.format context
+    str = str:gsub("%%", "%%%%")
+    return str
+end
+
+-- Safely extracts the expression from the temp AST
+local function extractExpression(tempAst)
+    if not tempAst or not tempAst.body or not tempAst.body.statements then return nil end
+    local stmt = tempAst.body.statements[1]
+    if not stmt then return nil end
+    return (stmt.init and stmt.init[1]) or (stmt.values and stmt.values[1]) or (stmt.expressions and stmt.expressions[1])
+end
+
+-- Generates "Zero-Sum Noise" (Math that equals 0 but looks complex)
+function NumbersToExpressions:GetNoise()
+    local r = math.random(1, 1000) / 100
+    local noiseTypes = {
+        string.format("((%s * 0))", r),
+        string.format("((%s - %s))", r, r),
+        string.format("((%s * %s) * 0)", r, math.random())
+    }
+    return noiseTypes[math.random(#noiseTypes)]
+end
+
+function NumbersToExpressions:GenerateMathString(val, depth)
+    if depth >= self.MaxDepth then
+        -- Randomly choose between decimal or integer representation
+        if math.random() > 0.5 then
+            return string.format("%.2f", val)
+        else
+            return tostring(val)
+        end
+    end
+
+    local op = math.random(1, 6)
+    local noise = (math.random() > 0.7) and (" + " .. self:GetNoise()) or ""
+
+    if op == 1 then -- Chaotic Addition
+        local r = (math.random(-5000, 5000) / 100)
+        return string.format("((%s + %s)%s)", 
+            self:GenerateMathString(r, depth + 1), 
+            self:GenerateMathString(val - r, depth + 1), 
+            noise)
+    
+    elseif op == 2 then -- Chaotic Subtraction
+        local r = (math.random(-5000, 5000) / 100)
+        return string.format("((%s - %s)%s)", 
+            self:GenerateMathString(val + r, depth + 1), 
+            self:GenerateMathString(r, depth + 1), 
+            noise)
+    
+    elseif op == 3 then -- Decimal Multiplication
+        local factor = (math.random(110, 500) / 100) -- e.g. 1.1 to 5.0
+        return string.format("((%s * %s)%s)", 
+            self:GenerateMathString(val / factor, depth + 1), 
+            factor, 
+            noise)
+    
+    elseif op == 4 then -- Floating Division
+        local factor = (math.random(200, 1000) / 100)
+        return string.format("((%s / %s)%s)", 
+            self:GenerateMathString(val * factor, depth + 1), 
+            factor, 
+            noise)
+    
+    elseif op == 5 then -- Logical Obfuscation
+        local junk = math.random() * 1000
+        return string.format("(((%s == %s) and %s or %s)%s)", 
+            math.random(1,5), 
+            math.random(1,5), 
+            self:GenerateMathString(val, depth + 1), 
+            junk, 
+            noise)
+    
+    else -- Modulo/Multi-Op Garbage
+        -- Represents: ((val - 1) + (10 % 9)) -> essentially val
+        -- NOTE: %% becomes % in the final string
+        return string.format("((%s - 1) + (10 %% 9))", 
+            self:GenerateMathString(val, depth + 1))
+    end
+end
+
+function NumbersToExpressions:apply(ast)
+    visitast(ast, nil, function(node)
+        if node.kind == Ast.AstKind.NumberExpression and not node.NoObfuscation and not node.IsGenerated then
+            if math.random() <= self.Treshold then
+                
+                local mathStr = self:GenerateMathString(node.value, 0)
+                
+                
+                local escapedMathStr = escapeLuaString(mathStr)
+                local parseString = "local _ = " .. escapedMathStr
+                
+                local success, tempAst = pcall(function() 
+                    return self.internalParser:parse(parseString) 
+                end)
+
+                if success and tempAst then
+                    local expression = extractExpression(tempAst)
+                    if expression then
+                        expression.NoObfuscation = true
+                        expression.IsGenerated = true
+                        return expression
+                    else
+                        
+                    end
+                else
+                    
                 end
             end
         end
-    end
-
-    local secret_key_6 = math.random(0, 63)
-    local secret_key_7 = math.random(0, 127)
-    local secret_key_44 = math.random(0, 17592186044415)
-    local secret_key_8 = math.random(0, 255)
-    local floor = math.floor
-
-    local function primitive_root_257(idx)
-        local g, m, d = 1, 128, 2 * idx + 1
-        repeat
-            g = g * g * (d >= m and 3 or 1) % 257
-            m = m / 2
-            d = d % m
-        until m < 1
-        return g
-    end
-
-    local param_mul_8 = primitive_root_257(secret_key_7)
-    local param_mul_45 = secret_key_6 * 4 + 1
-    local param_add_45 = secret_key_44 * 2 + 1
-
-    local state_45, state_8 = 0, 2
-    local prev_values = {}
-
-    local function set_seed(seed)
-        state_45 = seed % 35184372088832
-        state_8 = seed % 255 + 2
-        prev_values = {}
-    end
-
-    local function get_random_32()
-        state_45 = (state_45 * param_mul_45 + param_add_45) % 35184372088832
-        repeat state_8 = state_8 * param_mul_8 % 257 until state_8 ~= 1
-        local r = state_8 % 32
-        local exp = 13 - (state_8 - r) / 32
-        return floor(state_45 / (2 ^ exp)) % 4294967296
-    end
-
-    local function get_next_pseudo_random_byte()
-        if #prev_values == 0 then
-            local rnd = get_random_32()
-            prev_values = {
-                rnd % 256,
-                floor(rnd / 256) % 256,
-                floor(rnd / 65536) % 256,
-                floor(rnd / 16777216) % 256
-            }
-        end
-        local v = prev_values[#prev_values]
-        prev_values[#prev_values] = nil
-        return v or 0
-    end
-
-    local function encrypt(str)
-        local seed = math.random(0, 35184372088832)
-        set_seed(seed)
-        local out = {}
-        local prev = secret_key_8
-        for i = 1, #str do
-            local b = string.byte(str, i)
-            local e = (b - (get_next_pseudo_random_byte() + prev)) % 256
-            out[#out + 1] = bytetosymbol[e]
-            prev = b
-        end
-        return table.concat(out), seed
-    end
-
-    local function genCode()
-        local mapstr = "local symMap={"
-        for s, b in pairs(symboltobyte) do
-            mapstr = mapstr .. "['" .. s .. "']=" .. b .. ","
-        end
-        mapstr = mapstr .. "}"
-
-        return [[
-do
-local DECRYPT
-]] .. mapstr .. [[
-local floor,char,sub=math.floor,string.char,string.sub
-local state_45,state_8,prev_values=0,2,{}
-
-local function get_next_pseudo()
-    if #prev_values==0 then
-        state_45=(state_45*]]..param_mul_45..[[+]]..param_add_45..[[)%35184372088832
-        repeat state_8=state_8*]]..param_mul_8..[[%257 until state_8~=1
-        local r=state_8%32
-        local exp=13-(state_8-r)/32
-        local rnd=floor(state_45/(2^exp))%4294967296
-        prev_values={
-            rnd%256,
-            floor(rnd/256)%256,
-            floor(rnd/65536)%256,
-            floor(rnd/16777216)%256
-        }
-    end
-    local v=prev_values[#prev_values]
-    prev_values[#prev_values]=nil
-    return v or 0
-end
-
-local cache={}
-
-function DECRYPT(str,seed)
-    if cache[seed] then return cache[seed] end
-    
-    state_45=seed%35184372088832
-    state_8=seed%255+2
-    prev_values={}
-    local res={}
-    local prev=]]..secret_key_8..[[
-
-    for i=1,#str,3 do
-        local sym=sub(str,i,i+2)
-        local eb=symMap[sym] or 0
-        prev=(eb+get_next_pseudo()+prev)%256
-        res[#res+1]=char(prev)
-    end
-
-    local result=table.concat(res)
-    cache[seed]=result
-    return result
-end
-end]]
-    end
-
-    return { encrypt = encrypt, genCode = genCode }
-end
-
-function EncryptStrings:apply(ast, pipeline)
-    local enc = self:CreateEncrypionService()
-    local newAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua51 }):parse(enc.genCode())
-    local dostat = newAst.body.statements[1]
-
-    local scope = ast.body.scope
-    local decryptVar = scope:addVariable()
-    
-    -- Insert do block first
-    table.insert(ast.body.statements, 1, dostat)
-
-    -- Add local declaration after do block
-    table.insert(ast.body.statements, 2,
-        Ast.LocalVariableDeclaration(scope, { decryptVar }, {})
-    )
-
-    -- The do-block already declares DECRYPT as a local and defines it
-    // We just need to use our local variable to reference it
-    // Since DECRYPT is already declared locally in the do-block,
-    // we can just use our variable to call it
-
-    -- Replace all string literals with calls to DECRYPT
-    visitast(ast, nil, function(node)
-        if node.kind == AstKind.StringExpression and not node.IsGenerated then
-            local e, s = enc.encrypt(node.value)
-            local call = Ast.FunctionCallExpression(
-                Ast.VariableExpression(scope, decryptVar),
-                { Ast.StringExpression(e), Ast.NumberExpression(s) }
-            )
-            call.IsGenerated = true
-            return call
-        end
     end)
+    
+    return ast
 end
 
-return EncryptStrings
+return NumbersToExpressions
