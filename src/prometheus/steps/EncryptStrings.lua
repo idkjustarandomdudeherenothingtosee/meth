@@ -1,23 +1,22 @@
 local Step = require("prometheus.step")
 local Ast = require("prometheus.ast")
-local Scope = require("prometheus.scope")
 local Parser = require("prometheus.parser")
 local Enums = require("prometheus.enums")
 local visitast = require("prometheus.visitast")
-local util = require("prometheus.util")
 local AstKind = Ast.AstKind
 
-local EncryptStrings = Step.extend()
+local EncryptStrings = Step:extend()
 EncryptStrings.Description = "Encrypts strings and converts bytes into unique symbol sequences."
 EncryptStrings.Name = "Encrypt Strings (Symbolic)"
 
-function EncryptStrings.init(settings) end
+function EncryptStrings:init(settings) end
 
-function EncryptStrings.CreateEncrypionService()
+function EncryptStrings:CreateEncrypionService()
     local syms = {"!","@","#","$","%","^","&","*","(",")","-","+","=","{","}"}
     local byteToSymbol = {}
     local symbolToByte = {}
     local count = 0
+
     for i = 1, #syms do
         for j = 1, #syms do
             for k = 1, #syms do
@@ -69,8 +68,7 @@ function EncryptStrings.CreateEncrypionService()
         local r = state_8 % 32
         local exp = 13 - (state_8 - r) / 32
         local n = floor(state_45 / (2 ^ exp))
-        n = n % 4294967296
-        return n
+        return n % 4294967296
     end
 
     local function get_next_pseudo_random_byte()
@@ -91,12 +89,14 @@ function EncryptStrings.CreateEncrypionService()
         set_seed(seed)
         local out = {}
         local prevVal = secret_key_8
+
         for i = 1, #str do
             local byte = string.byte(str, i)
             local encryptedByte = (byte - (get_next_pseudo_random_byte() + prevVal)) % 256
             out[#out + 1] = byteToSymbol[encryptedByte]
             prevVal = byte
         end
+
         return table.concat(out), seed
     end
 
@@ -112,6 +112,7 @@ do
 ]] .. mapStr .. [[
 local floor,char,sub=math.floor,string.char,string.sub
 local state_45,state_8,prev_values=0,2,{}
+
 local function get_next_pseudo()
     if #prev_values==0 then
         state_45=(state_45*]]..param_mul_45..[[+]]..param_add_45..[[)%35184372088832
@@ -160,27 +161,30 @@ end]]
     }
 end
 
-function EncryptStrings.apply(ast, pipeline)
-    local Encryptor = self.CreateEncrypionService()
-    local newAst = Parser.new({ LuaVersion = Enums.LuaVersion.Lua51 }).parse(Encryptor.genCode())
+function EncryptStrings:apply(ast, pipeline)
+    local encryptor = self:CreateEncrypionService()
+    local newAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua51 }):parse(encryptor.genCode())
     local doStat = newAst.body.statements[1]
-    local scope = ast.body.scope
-    local decryptVar, stringsVar = scope.addVariable(), scope.addVariable()
 
-    doStat.body.scope.setParent(scope)
+    local scope = ast.body.scope
+    local decryptVar, stringsVar = scope:addVariable(), scope:addVariable()
+
+    doStat.body.scope:setParent(scope)
 
     visitast(newAst, nil, function(node)
-        if node.kind == AstKind.FunctionDeclaration and node.scope.getVariableName(node.id) == "DECRYPT" then
+        if node.kind == AstKind.FunctionDeclaration
+            and node.scope:getVariableName(node.id) == "DECRYPT" then
             node.id = decryptVar
-        elseif (node.kind == AstKind.AssignmentVariable or node.kind == AstKind.VariableExpression)
-            and node.scope.getVariableName(node.id) == "STRINGS" then
+        elseif (node.kind == AstKind.AssignmentVariable
+            or node.kind == AstKind.VariableExpression)
+            and node.scope:getVariableName(node.id) == "STRINGS" then
             node.id = stringsVar
         end
     end)
 
     visitast(ast, nil, function(node)
         if node.kind == AstKind.StringExpression and not node.IsGenerated then
-            local encrypted, seed = Encryptor.encrypt(node.value)
+            local encrypted, seed = encryptor.encrypt(node.value)
             local call = Ast.IndexExpression(
                 Ast.VariableExpression(scope, stringsVar),
                 Ast.FunctionCallExpression(
@@ -197,7 +201,8 @@ function EncryptStrings.apply(ast, pipeline)
     end)
 
     table.insert(ast.body.statements, 1, doStat)
-    table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(scope, {decryptVar, stringsVar}, {}))
+    table.insert(ast.body.statements, 1,
+        Ast.LocalVariableDeclaration(scope, { decryptVar, stringsVar }, {}))
 end
 
 return EncryptStrings
