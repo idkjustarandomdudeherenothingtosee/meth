@@ -117,8 +117,6 @@ function NumbersToExpressions:apply(ast)
                 local escapedMathStr = escapeLuaString(mathStr)
                 local parseString = "local _ = " .. escapedMathStr
                 
-                print("Parse string: " .. parseString)
-                
                 local success, tempAst = pcall(function() 
                     return self.internalParser:parse(parseString) 
                 end)
