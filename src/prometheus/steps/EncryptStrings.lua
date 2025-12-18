@@ -1,348 +1,313 @@
--- EncryptStrings.lua - Safe Lua 5.4 Version
--- Uses proper Prometheus AST construction
+-- EncryptStrings.lua - Minimal Version
+-- Doesn't generate code, just encrypts strings directly
 
 local Step = require("prometheus.step")
 local Ast = require("prometheus.ast")
 local Scope = require("prometheus.scope")
-local Parser = require("prometheus.parser")
 local Enums = require("prometheus.enums")
 local visitast = require("prometheus.visitast")
-local util = require("prometheus.util")
 local AstKind = Ast.AstKind
 
 local EncryptStrings = Step:extend()
-EncryptStrings.Description = "Encrypts strings using safe Lua 5.4 compatible encoding"
-EncryptStrings.Name = "Encrypt Strings (Lua 5.4 Safe)"
+EncryptStrings.Description = "Encrypts strings with simple XOR encryption"
+EncryptStrings.Name = "Encrypt Strings (Simple)"
 
 function EncryptStrings:init(settings) end
 
 function EncryptStrings:CreateEncryptionService()
-    -- Use only characters that are safe for Lua strings
-    local safe_chars = {}
-    for i = 65, 90 do  -- A-Z
-        table.insert(safe_chars, string.char(i))
-    end
-    for i = 97, 122 do -- a-z
-        table.insert(safe_chars, string.char(i))
-    end
-    for i = 48, 57 do  -- 0-9
-        table.insert(safe_chars, string.char(i))
-    end
-    
-    -- Create encoding/decoding tables
-    local char_to_index = {}
-    local index_to_char = {}
-    
-    for i, char in ipairs(safe_chars) do
-        char_to_index[char] = i - 1
-        index_to_char[i - 1] = char
-    end
-    
-    local base = #safe_chars
-    
-    -- Simple encryption: character shift + XOR
+    -- Create a simple XOR-based encryption
     local function encrypt_string(str)
-        -- Generate random shift (1-25)
-        local shift = math.random(1, 25)
-        -- Generate random XOR key
-        local xor_key = math.random(0, 255)
+        -- Generate a random key
+        local key = math.random(1, 255)
+        -- Generate a random seed for variation
+        local seed = math.random(1, 255)
         
-        local encoded = {}
+        local encrypted_chars = {}
+        local hex_result = {}
         
-        -- First two chars encode the shift and xor_key
-        table.insert(encoded, index_to_char[shift])
-        table.insert(encoded, index_to_char[xor_key % base])
-        
-        -- Encode the string
+        -- Convert to hex string for safety
         for i = 1, #str do
             local byte = string.byte(str, i)
-            -- Apply shift and XOR
-            local encrypted = (byte + shift) ~ xor_key
-            -- Convert to base-N representation (2 chars)
-            local high = math.floor(encrypted / base)
-            local low = encrypted % base
-            table.insert(encoded, index_to_char[high])
-            table.insert(encoded, index_to_char[low])
+            -- XOR with key and add seed for variation
+            local encrypted = (byte ~ key) + seed
+            -- Make sure it stays in byte range
+            encrypted = encrypted % 256
+            -- Convert to hex
+            table.insert(hex_result, string.format("%02X", encrypted))
         end
         
-        return table.concat(encoded), shift, xor_key
+        -- Return hex string, key, and seed
+        return table.concat(hex_result), key, seed
     end
     
-    -- Generate simple, safe decryption code as string
-    local function genDecryptionCode()
-        return [[
-do
-    local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-    local char_index = {}
-    
-    for i = 1, #chars do
-        char_index[chars:sub(i, i)] = i - 1
-    end
-    
-    local base = #chars
-    local str_cache = {}
-    local STR = {}
-    
-    local function DEC(encoded)
-        if str_cache[encoded] then
-            return str_cache[encoded]
-        end
+    -- Generate inline decryption code as an expression
+    local function createDecryptionExpression(hex_str, key, seed)
+        -- This creates an anonymous function that decrypts when called
+        local code = string.format([[
+            (function()
+                local hex = "%s"
+                local key = %d
+                local seed = %d
+                local result = ""
+                
+                for i = 1, #hex, 2 do
+                    local hex_byte = hex:sub(i, i + 1)
+                    local encrypted = tonumber(hex_byte, 16)
+                    local decrypted = (encrypted - seed) %% 256
+                    local char = string.char(decrypted ~ key)
+                    result = result .. char
+                end
+                
+                return result
+            end)()
+        ]], hex_str, key, seed)
         
-        local shift = char_index[encoded:sub(1, 1)]
-        local xor_key = char_index[encoded:sub(2, 2)]
-        local result = {}
-        
-        for i = 3, #encoded, 2 do
-            local high_char = encoded:sub(i, i)
-            local low_char = encoded:sub(i + 1, i + 1)
-            local high = char_index[high_char] or 0
-            local low = char_index[low_char] or 0
-            local val = high * base + low
-            local decrypted = (val ~ xor_key) - shift
-            result[#result + 1] = string.char(decrypted)
-        end
-        
-        local decrypted_str = table.concat(result)
-        str_cache[encoded] = decrypted_str
-        return decrypted_str
-    end
-end
-]]
+        return code
     end
     
     return {
-        encrypt = function(str)
-            local encoded, shift, xor_key = encrypt_string(str)
-            return encoded
-        end,
-        genCode = genDecryptionCode
+        encrypt = encrypt_string,
+        createDecryptionExpression = createDecryptionExpression
     }
 end
 
 function EncryptStrings:apply(ast, pipeline)
     local Encryptor = self:CreateEncryptionService()
+    
+    -- Track all encrypted strings to create a lookup table
+    local encrypted_strings = {}
+    local string_id = 1
+    
+    -- First pass: collect all strings and encrypt them
+    visitast(ast, nil, function(node, data)
+        if node.kind == AstKind.StringExpression and not node.IsGenerated then
+            local hex_str, key, seed = Encryptor.encrypt(node.value)
+            
+            -- Store the encrypted string with metadata
+            encrypted_strings[string_id] = {
+                original = node.value,
+                hex = hex_str,
+                key = key,
+                seed = seed,
+                node = node
+            }
+            
+            -- Mark the node with an ID for replacement
+            node.string_id = string_id
+            string_id = string_id + 1
+        end
+    end)
+    
+    -- Create a string table in the AST
     local scope = ast.body.scope
     
-    -- Create variable names
-    local decrypt_var = scope:addVariable()
-    local strings_var = scope:addVariable()
+    -- Create a lookup table variable
+    local string_table_var = scope:addVariable()
     
-    -- Parse the decryption code
-    local decryption_code = Encryptor.genCode()
+    -- Build the string table initialization
+    local table_entries = {}
     
-    -- Try to parse the code
-    local parser = Parser:new({ LuaVersion = Enums.LuaVersion.Lua51 }) -- Use Lua51 for compatibility
-    local parse_result = parser:parse(decryption_code)
-    
-    if parse_result and parse_result.body then
-        -- Get the do statement from the parsed code
-        local do_statement = parse_result.body.statements[1]
+    for id, str_data in pairs(encrypted_strings) do
+        -- Create the decryption function for this string
+        local decryption_code = Encryptor.createDecryptionExpression(str_data.hex, str_data.key, str_data.seed)
         
-        if do_statement and do_statement.kind == AstKind.DoStatement then
-            -- Set parent scope
-            do_statement.body.scope.parent = scope
-            
-            -- Rename DEC and STR in the do block
-            local function rename_in_do(node)
-                if node.kind == AstKind.FunctionDeclaration then
-                    -- Check if this is the DEC function
-                    local func_name = node.scope:getVariableName(node.id)
-                    if func_name == "DEC" then
-                        node.id = decrypt_var
-                    end
-                elseif node.kind == AstKind.LocalVariableDeclaration then
-                    -- Check if this is the STR variable
-                    for i, var in ipairs(node.ids) do
-                        local var_name = node.scope:getVariableName(var)
-                        if var_name == "STR" then
-                            node.ids[i] = strings_var
-                        end
-                    end
-                elseif node.kind == AstKind.VariableExpression then
-                    -- Rename variable references
-                    local var_name = node.scope:getVariableName(node.id)
-                    if var_name == "DEC" then
-                        node.id = decrypt_var
-                    elseif var_name == "STR" then
-                        node.id = strings_var
-                    end
-                end
-            end
-            
-            visitast(do_statement, nil, rename_in_do)
-            
-            -- Insert the do block at the beginning
-            table.insert(ast.body.statements, 1, do_statement)
-        end
-    else
-        -- Fallback: create a simple do block manually
-        print("Warning: Could not parse decryption code, using fallback")
+        -- Parse this as an expression
+        -- We'll create a simple function call instead
+        local func_call = self:createInlineDecryptor(str_data.hex, str_data.key, str_data.seed, scope)
         
-        -- Create a simple do block with basic encryption
-        local do_scope = Scope:new(scope)  -- Create child scope
-        
-        -- Create variable declarations
-        local chars_var = do_scope:addVariable()
-        local char_index_var = do_scope:addVariable()
-        local base_var = do_scope:addVariable()
-        local str_cache_var = do_scope:addVariable()
-        
-        -- Create STR variable
-        local str_var = do_scope:addVariable()
-        
-        -- Create DEC function
-        local dec_func_var = do_scope:addVariable()
-        local encoded_param = do_scope:addVariable()
-        
-        -- Build simple statements
-        local statements = {}
-        
-        -- chars = "ABC..."
-        table.insert(statements, Ast.LocalVariableDeclaration(
-            do_scope,
-            {chars_var},
-            {Ast.StringExpression("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")}
+        table.insert(table_entries, Ast.TableEntry(
+            scope,
+            Ast.NumberExpression(id),
+            func_call
         ))
-        
-        -- char_index = {}
-        table.insert(statements, Ast.LocalVariableDeclaration(
-            do_scope,
-            {char_index_var},
-            {Ast.TableExpression(do_scope)}
-        ))
-        
-        -- STR = {}
-        table.insert(statements, Ast.LocalVariableDeclaration(
-            do_scope,
-            {str_var},
-            {Ast.TableExpression(do_scope)}
-        ))
-        
-        -- str_cache = {}
-        table.insert(statements, Ast.LocalVariableDeclaration(
-            do_scope,
-            {str_cache_var},
-            {Ast.TableExpression(do_scope)}
-        ))
-        
-        -- base = #chars
-        table.insert(statements, Ast.LocalVariableDeclaration(
-            do_scope,
-            {base_var},
-            {Ast.UnaryOperatorExpression("#", Ast.VariableExpression(do_scope, chars_var))}
-        ))
-        
-        -- Create a simple DEC function
-        local dec_func = Ast.FunctionDeclaration(
-            do_scope,
-            dec_func_var,
-            {encoded_param},
-            Ast.Block(do_scope)
-        )
-        
-        table.insert(statements, dec_func)
-        
-        -- Create do block
-        local do_block = Ast.DoStatement(do_scope)
-        do_block.body.statements = statements
-        
-        -- Insert at beginning
-        table.insert(ast.body.statements, 1, do_block)
     end
     
-    -- Declare outer variables
-    table.insert(ast.body.statements, 1, 
-        Ast.LocalVariableDeclaration(scope, {decrypt_var, strings_var}, {})
+    -- Create the string table
+    local string_table = Ast.TableExpression(scope, table_entries)
+    
+    -- Create variable declaration for the string table
+    local table_declaration = Ast.LocalVariableDeclaration(
+        scope,
+        {string_table_var},
+        {string_table}
     )
     
-    -- Replace string literals with encrypted versions
-    self:replaceStringLiterals(ast, Encryptor, scope, decrypt_var, strings_var)
+    -- Insert at the beginning
+    table.insert(ast.body.statements, 1, table_declaration)
+    
+    -- Second pass: replace string literals with table lookups
+    visitast(ast, nil, function(node, data)
+        if node.kind == AstKind.StringExpression and not node.IsGenerated and node.string_id then
+            -- Replace with: string_table[string_id]
+            local index_expr = Ast.IndexExpression(
+                Ast.VariableExpression(scope, string_table_var),
+                Ast.NumberExpression(node.string_id)
+            )
+            
+            index_expr.IsGenerated = true
+            return index_expr
+        end
+    end)
     
     return ast
 end
 
-function EncryptStrings:replaceStringLiterals(ast, Encryptor, scope, decrypt_var, strings_var)
-    -- Track replacements to make
-    local replacements = {}
+function EncryptStrings:createInlineDecryptor(hex_str, key, seed, scope)
+    -- Create an anonymous function that decrypts the string
+    -- (function() ... return decrypted_string end)()
     
-    local function findStringLiterals(node, parent, key)
-        if node.kind == AstKind.StringExpression and not node.IsGenerated then
-            table.insert(replacements, {
-                node = node,
-                parent = parent,
-                key = key,
-                encrypted = Encryptor.encrypt(node.value)
-            })
-        end
-        
-        -- Recurse through AST
-        if node.body and node.body.statements then
-            for i, stmt in ipairs(node.body.statements) do
-                findStringLiterals(stmt, node.body, i)
-            end
-        end
-        
-        if node.statements then
-            for i, stmt in ipairs(node.statements) do
-                findStringLiterals(stmt, node, i)
-            end
-        end
-        
-        if node.expressions then
-            for i, expr in ipairs(node.expressions) do
-                findStringLiterals(expr, node, i)
-            end
-        end
-        
-        if node.value and node.value.kind then
-            findStringLiterals(node.value, node, "value")
-        end
-        
-        if node.key and node.key.kind then
-            findStringLiterals(node.key, node, "key")
-        end
-        
-        if node.init then
-            for i, init in ipairs(node.init) do
-                if init.kind then
-                    findStringLiterals(init, node.init, i)
-                end
-            end
-        end
-    end
+    -- Create a new scope for the function
+    local func_scope = Scope:new(scope)
     
-    findStringLiterals(ast)
+    -- Create the function body
+    local body_statements = {}
     
-    -- Apply replacements
-    for _, replacement in ipairs(replacements) do
-        local encrypted_str = replacement.encrypted
+    -- hex = "hex_str"
+    local hex_var = func_scope:addVariable()
+    table.insert(body_statements, Ast.LocalVariableDeclaration(
+        func_scope,
+        {hex_var},
+        {Ast.StringExpression(hex_str)}
+    ))
+    
+    -- key = key_value
+    local key_var = func_scope:addVariable()
+    table.insert(body_statements, Ast.LocalVariableDeclaration(
+        func_scope,
+        {key_var},
+        {Ast.NumberExpression(key)}
+    ))
+    
+    -- seed = seed_value
+    local seed_var = func_scope:addVariable()
+    table.insert(body_statements, Ast.LocalVariableDeclaration(
+        func_scope,
+        {seed_var},
+        {Ast.NumberExpression(seed)}
+    ))
+    
+    -- result = ""
+    local result_var = func_scope:addVariable()
+    table.insert(body_statements, Ast.LocalVariableDeclaration(
+        func_scope,
+        {result_var},
+        {Ast.StringExpression("")}
+    ))
+    
+    -- Create a for loop: for i = 1, #hex, 2 do
+    local i_var = func_scope:addVariable()
+    
+    local for_loop = Ast.ForNumericStatement(
+        func_scope,
+        i_var,
+        Ast.NumberExpression(1),
+        Ast.UnaryOperatorExpression("#", Ast.VariableExpression(func_scope, hex_var)),
+        Ast.NumberExpression(2),
+        Ast.Block(func_scope)
+    )
+    
+    -- Loop body: decrypt each byte
+    local hex_byte_var = for_loop.body.scope:addVariable()
+    local encrypted_var = for_loop.body.scope:addVariable()
+    local decrypted_var = for_loop.body.scope:addVariable()
+    local char_var = for_loop.body.scope:addVariable()
+    
+    local loop_body = {
+        -- hex_byte = hex:sub(i, i + 1)
+        Ast.LocalVariableDeclaration(
+            for_loop.body.scope,
+            {hex_byte_var},
+            {Ast.FunctionCallExpression(
+                Ast.IndexExpression(
+                    Ast.VariableExpression(for_loop.body.scope, hex_var),
+                    Ast.StringExpression("sub")
+                ),
+                {
+                    Ast.VariableExpression(for_loop.body.scope, i_var),
+                    Ast.BinaryOperatorExpression(
+                        "+",
+                        Ast.VariableExpression(for_loop.body.scope, i_var),
+                        Ast.NumberExpression(1)
+                    )
+                }
+            )}
+        ),
         
-        -- Create: STRINGS[DECRYPT(encrypted_str)]
-        local decrypt_call = Ast.FunctionCallExpression(
-            Ast.VariableExpression(scope, decrypt_var),
-            {Ast.StringExpression(encrypted_str)}
+        -- encrypted = tonumber(hex_byte, 16)
+        Ast.LocalVariableDeclaration(
+            for_loop.body.scope,
+            {encrypted_var},
+            {Ast.FunctionCallExpression(
+                Ast.VariableExpression(for_loop.body.scope, for_loop.body.scope:getVariable("tonumber")),
+                {
+                    Ast.VariableExpression(for_loop.body.scope, hex_byte_var),
+                    Ast.NumberExpression(16)
+                }
+            )}
+        ),
+        
+        -- decrypted = (encrypted - seed) % 256
+        Ast.LocalVariableDeclaration(
+            for_loop.body.scope,
+            {decrypted_var},
+            {Ast.BinaryOperatorExpression(
+                "%",
+                Ast.BinaryOperatorExpression(
+                    "-",
+                    Ast.VariableExpression(for_loop.body.scope, encrypted_var),
+                    Ast.VariableExpression(for_loop.body.scope, seed_var)
+                ),
+                Ast.NumberExpression(256)
+            )}
+        ),
+        
+        -- char = string.char(decrypted ~ key)
+        Ast.LocalVariableDeclaration(
+            for_loop.body.scope,
+            {char_var},
+            {Ast.FunctionCallExpression(
+                Ast.IndexExpression(
+                    Ast.VariableExpression(for_loop.body.scope, for_loop.body.scope:getVariable("string")),
+                    Ast.StringExpression("char")
+                ),
+                {Ast.BinaryOperatorExpression(
+                    "~",
+                    Ast.VariableExpression(for_loop.body.scope, decrypted_var),
+                    Ast.VariableExpression(for_loop.body.scope, key_var)
+                )}
+            )}
+        ),
+        
+        -- result = result .. char
+        Ast.AssignmentStatement(
+            for_loop.body.scope,
+            {Ast.VariableExpression(for_loop.body.scope, result_var)},
+            {Ast.BinaryOperatorExpression(
+                "..",
+                Ast.VariableExpression(for_loop.body.scope, result_var),
+                Ast.VariableExpression(for_loop.body.scope, char_var)
+            )}
         )
-        
-        local index_expr = Ast.IndexExpression(
-            Ast.VariableExpression(scope, strings_var),
-            decrypt_call
-        )
-        
-        index_expr.IsGenerated = true
-        
-        -- Replace the node
-        if replacement.parent then
-            if replacement.parent.statements and replacement.key then
-                replacement.parent.statements[replacement.key] = index_expr
-            elseif replacement.parent.expressions and replacement.key then
-                replacement.parent.expressions[replacement.key] = index_expr
-            elseif replacement.parent.value == replacement.node then
-                replacement.parent.value = index_expr
-            elseif replacement.parent.key == replacement.node then
-                replacement.parent.key = index_expr
-            end
-        end
-    end
+    }
+    
+    for_loop.body.statements = loop_body
+    table.insert(body_statements, for_loop)
+    
+    -- return result
+    table.insert(body_statements, Ast.ReturnStatement(
+        func_scope,
+        {Ast.VariableExpression(func_scope, result_var)}
+    ))
+    
+    -- Create the anonymous function
+    local func_expr = Ast.FunctionExpression(
+        func_scope,
+        {},  -- No parameters
+        Ast.Block(func_scope, body_statements)
+    )
+    
+    -- Call the function immediately: (function() ... end)()
+    return Ast.FunctionCallExpression(func_expr, {})
 end
 
 return EncryptStrings
