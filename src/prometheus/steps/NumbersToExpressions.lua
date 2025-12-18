@@ -16,6 +16,7 @@ function EncryptStrings:CreateEncrypionService()
     local bytetosymbol = {}
     local symboltobyte = {}
     local c = 0
+
     for i = 1, #syms do
         for j = 1, #syms do
             for k = 1, #syms do
@@ -61,13 +62,10 @@ function EncryptStrings:CreateEncrypionService()
 
     local function get_random_32()
         state_45 = (state_45 * param_mul_45 + param_add_45) % 35184372088832
-        repeat
-            state_8 = state_8 * param_mul_8 % 257
-        until state_8 ~= 1
+        repeat state_8 = state_8 * param_mul_8 % 257 until state_8 ~= 1
         local r = state_8 % 32
         local exp = 13 - (state_8 - r) / 32
-        local n = floor(state_45 / (2 ^ exp))
-        return n % 4294967296
+        return floor(state_45 / (2 ^ exp)) % 4294967296
     end
 
     local function get_next_pseudo_random_byte()
@@ -90,12 +88,14 @@ function EncryptStrings:CreateEncrypionService()
         set_seed(seed)
         local out = {}
         local prev = secret_key_8
+
         for i = 1, #str do
             local b = string.byte(str, i)
             local e = (b - (get_next_pseudo_random_byte() + prev)) % 256
             out[#out + 1] = bytetosymbol[e]
             prev = b
         end
+
         return table.concat(out), seed
     end
 
@@ -145,8 +145,7 @@ function DECRYPT(str,seed)
     for i=1,#str,3 do
         local sym=sub(str,i,i+2)
         local eb=symMap[sym] or 0
-        local r=get_next_pseudo() or 0
-        prev=(eb+r+prev)%256
+        prev=(eb+get_next_pseudo()+prev)%256
         prev=floor(prev)%256
         res[#res+1]=char(prev)
     end
@@ -157,10 +156,7 @@ end
 end]]
     end
 
-    return {
-        encrypt = encrypt,
-        genCode = genCode
-    }
+    return { encrypt = encrypt, genCode = genCode }
 end
 
 function EncryptStrings:apply(ast, pipeline)
@@ -197,8 +193,10 @@ function EncryptStrings:apply(ast, pipeline)
         end
     end)
 
-    table.insert(ast.body.statements, 1, dostat)
-    table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(scope, { decryptVar, stringsVar }, {}))
+    table.insert(ast.body.statements, 1,
+        Ast.LocalVariableDeclaration(scope, { decryptVar, stringsVar }, {})
+    )
+    table.insert(ast.body.statements, 2, dostat)
 end
 
 return EncryptStrings
