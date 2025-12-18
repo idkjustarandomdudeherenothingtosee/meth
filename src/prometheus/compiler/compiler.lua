@@ -200,6 +200,16 @@ function Compiler:compile(ast)
     self.getUpvalueId = function(self, scope, id)
         local expression;
         local scopeFuncDepth = self.scopeFunctionDepths[scope];
+        if not scopeFuncDepth then
+            -- If scope hasn't been registered yet, it might be a global scope or we need to track it
+            if scope.isGlobal then
+                scopeFuncDepth = 0;
+                self.scopeFunctionDepths[scope] = 0;
+            else
+                logger:error("Unregistered scope in getUpvalueId!");
+            end
+        end
+        
         if(scopeFuncDepth == 0) then
             if upvalueIds[id] then
                 return upvalueIds[id];
@@ -1064,6 +1074,9 @@ function Compiler:compileFunction(node, funcDepth)
             return upvalueIds[scope][id];
         end
         local scopeFuncDepth = self.scopeFunctionDepths[scope];
+        if not scopeFuncDepth then
+            logger:error("Scope not registered in function compilation: " .. tostring(scope));
+        end
         local expression;
         if(scopeFuncDepth == funcDepth) then
             oldActiveBlock.scope:addReferenceToHigherScope(self.scope, self.allocUpvalFunction);
@@ -1072,7 +1085,7 @@ function Compiler:compileFunction(node, funcDepth)
             local varReg = self:getVarRegister(scope, id, scopeFuncDepth, nil);
             expression = self:register(oldActiveBlock.scope, varReg);
             table.insert(usedRegs, varReg);
-        elseif(scopeFuncDepth < funcDepth - 1) then
+        elseif(scopeFuncDepth and scopeFuncDepth < funcDepth - 1) then
             -- Handle upvalues from scopes more than one level above
             local higherId = oldGetUpvalueId(self, scope, id);
             oldActiveBlock.scope:addReferenceToHigherScope(self.containerFuncScope, self.currentUpvaluesVar);
@@ -1981,7 +1994,14 @@ function Compiler:compileExpression(expression, funcDepth, numReturns)
                     self:freeRegister(tmpReg, false);
                 else
                     -- Local Variable
-                    if(self.scopeFunctionDepths[expression.scope] == funcDepth) then
+                    local scopeFuncDepth = self.scopeFunctionDepths[expression.scope];
+                    if not scopeFuncDepth then
+                        -- Scope not registered yet, register it now
+                        self.scopeFunctionDepths[expression.scope] = funcDepth;
+                        scopeFuncDepth = funcDepth;
+                    end
+                    
+                    if(scopeFuncDepth == funcDepth) then
                         if self:isUpvalue(expression.scope, expression.id) then
                             local reg = self:allocRegister(false);
                             local varReg = self:getVarRegister(expression.scope, expression.id, funcDepth, nil);
