@@ -438,11 +438,26 @@ function Ast.NumberExpression(value)
 end
 
 function Ast.StringExpression(value)
-	return {
-		kind = AstKind.StringExpression,
-		isConstant = true,
-		value = value,
-	}
+    -- Escape the string value for Lua string literals
+    local escapedValue = value
+    
+    -- First escape backslashes (most important!)
+    escapedValue = escapedValue:gsub("\\", "\\\\")
+    -- Escape quotes
+    escapedValue = escapedValue:gsub("\"", "\\\"")
+    -- Escape newlines
+    escapedValue = escapedValue:gsub("\n", "\\n")
+    -- Escape carriage returns
+    escapedValue = escapedValue:gsub("\r", "\\r")
+    -- Escape tabs
+    escapedValue = escapedValue:gsub("\t", "\\t")
+    
+    return {
+        kind = AstKind.StringExpression,
+        isConstant = true,
+        value = escapedValue,  -- NOW PROPERLY ESCAPED!
+        originalValue = value,  -- Keep original for debugging
+    }
 end
 
 function Ast.OrExpression(lhs, rhs, simplify)
