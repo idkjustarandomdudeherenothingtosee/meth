@@ -206,7 +206,17 @@ function Compiler:compile(ast)
             end
             expression = Ast.FunctionCallExpression(Ast.VariableExpression(self.scope, self.allocUpvalFunction), {});
         else
-            logger:error("Unresolved Upvalue, this error should not occur!");
+            -- For non-global scopes, we should not reach here during top-level compilation
+            -- This indicates an upvalue from a local scope that needs to be handled differently
+            -- We need to check if this scope is within the current function depth
+            local currentDepth = self.scopeFunctionDepths[self.containerFuncScope] or 0;
+            if scopeFuncDepth <= currentDepth then
+                -- This is a local variable that should have been captured as an upvalue
+                -- during function compilation, not here
+                logger:error("Unresolved Upvalue from local scope during top-level compilation!");
+            else
+                logger:error("Unresolved Upvalue, this error should not occur!");
+            end
         end
         table.insert(upvalEntries, Ast.TableEntry(expression));
         local uid = #upvalEntries;
@@ -1062,10 +1072,13 @@ function Compiler:compileFunction(node, funcDepth)
             local varReg = self:getVarRegister(scope, id, scopeFuncDepth, nil);
             expression = self:register(oldActiveBlock.scope, varReg);
             table.insert(usedRegs, varReg);
-        else
+        elseif(scopeFuncDepth < funcDepth - 1) then
+            -- Handle upvalues from scopes more than one level above
             local higherId = oldGetUpvalueId(self, scope, id);
             oldActiveBlock.scope:addReferenceToHigherScope(self.containerFuncScope, self.currentUpvaluesVar);
             expression = Ast.IndexExpression(Ast.VariableExpression(self.containerFuncScope, self.currentUpvaluesVar), Ast.NumberExpression(higherId));
+        else
+            logger:error("Unresolved Upvalue, this error should not occur! Scope depth: " .. tostring(scopeFuncDepth) .. ", Function depth: " .. tostring(funcDepth));
         end
         table.insert(upvalueExpressions, Ast.TableEntry(expression));
         local uid = #upvalueExpressions;
