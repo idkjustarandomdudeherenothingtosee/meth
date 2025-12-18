@@ -20,7 +20,7 @@ end
 
 -- Helper to escape Lua string literals
 local function escapeLuaString(str)
-    -- Escape backslashes first (most important!)
+    -- Escape backslashes first
     str = str:gsub("\\", "\\\\")
     -- Escape quotes
     str = str:gsub("\"", "\\\"")
@@ -48,41 +48,25 @@ function NumbersToExpressions:GetNoise()
     return noiseTypes[math.random(#noiseTypes)]
 end
 
--- Helper to ensure parentheses are balanced
-local function ensureParenthesesBalanced(expr)
-    local open = 0
-    local maxDepth = 0
-    local currentDepth = 0
-    
-    for i = 1, #expr do
-        local c = expr:sub(i, i)
-        if c == "(" then
-            open = open + 1
-            currentDepth = currentDepth + 1
-            maxDepth = math.max(maxDepth, currentDepth)
-        elseif c == ")" then
-            open = open - 1
-            currentDepth = currentDepth - 1
-            if open < 0 then
-                -- Too many closing parentheses
-                expr = "(" .. expr
-                open = 0
-                currentDepth = 1
-            end
-        end
-    end
-    
-    -- Add missing closing parentheses
-    while open > 0 do
-        expr = expr .. ")"
-        open = open - 1
-    end
-    
-    return expr
+-- Generate a simple, safe modulo expression
+function NumbersToExpressions:GetModuloExpression(val)
+    -- Simple modulo expressions that are easy to parse
+    local moduloTypes = {
+        function(v) return string.format("(%s + (5 %% 4) - 1)", v) end,  -- 5%4 = 1, so adds 0
+        function(v) return string.format("(%s + (10 %% 9) - 1)", v) end, -- 10%9 = 1, so adds 0
+        function(v) return string.format("(%s + (7 %% 3) - 1)", v) end,  -- 7%3 = 1, so adds 0
+        function(v) return string.format("(%s - (100 %% 99) + 1)", v) end -- 100%99 = 1, so adds 0
+    }
+    local chosen = moduloTypes[math.random(#moduloTypes)]
+    return chosen(val)
 end
 
 -- Test if expression parses correctly
 function NumbersToExpressions:testExpression(expr)
+    -- First clean up any potential issues
+    expr = expr:gsub("%%+", "%%") -- Ensure only single %
+    expr = expr:gsub("(%s*)%%(%s*)", "%1%%%2") -- Ensure spaces around %
+    
     local parseString = "local _ = " .. expr
     local success, tempAst = pcall(function() 
         return self.internalParser:parse(parseString) 
@@ -91,14 +75,46 @@ function NumbersToExpressions:testExpression(expr)
     return success and tempAst ~= nil
 end
 
+-- Simple expression generation without recursion for base cases
+function NumbersToExpressions:GenerateSimpleExpression(val)
+    local methods = {
+        function(v) 
+            local a = math.random(1, 1000) / 100
+            local b = v - a
+            return string.format("(%.2f + %.2f)", a, b)
+        end,
+        function(v)
+            local a = math.random(1, 1000) / 100
+            local b = v + a
+            return string.format("(%.2f - %.2f)", b, a)
+        end,
+        function(v)
+            if v ~= 0 then
+                local factor = math.random(11, 50) / 10
+                local base = v / factor
+                return string.format("(%.2f * %.1f)", base, factor)
+            else
+                return "0"
+            end
+        end,
+        function(v)
+            if v ~= 0 then
+                local factor = math.random(11, 50) / 10
+                local base = v * factor
+                return string.format("(%.2f / %.1f)", base, factor)
+            else
+                return "0"
+            end
+        end
+    }
+    
+    return methods[math.random(#methods)](val)
+end
+
 function NumbersToExpressions:GenerateMathString(val, depth)
     if depth >= self.MaxDepth then
-        -- Base case - return simple representation
-        if math.random() > 0.5 and math.floor(val) ~= val then
-            return string.format("%.2f", val)
-        else
-            return tostring(val)
-        end
+        -- Base case - use simple expressions
+        return self:GenerateSimpleExpression(val)
     end
 
     local noise = ""
@@ -106,63 +122,62 @@ function NumbersToExpressions:GenerateMathString(val, depth)
         noise = " + " .. self:GetNoise()
     end
 
-    -- Generate a valid expression
     local result = nil
     local attempts = 0
     
-    while attempts < 10 do  -- Try up to 10 times to generate a valid expression
+    while attempts < 5 do
         attempts = attempts + 1
         local op = math.random(1, 6)
         
-        if op == 1 then -- Chaotic Addition
+        if op == 1 then -- Addition
             local r = (math.random(-5000, 5000) / 100)
             local expr1 = self:GenerateMathString(r, depth + 1)
             local expr2 = self:GenerateMathString(val - r, depth + 1)
             result = string.format("(%s + %s)%s", expr1, expr2, noise)
         
-        elseif op == 2 then -- Chaotic Subtraction
+        elseif op == 2 then -- Subtraction
             local r = (math.random(-5000, 5000) / 100)
             local expr1 = self:GenerateMathString(val + r, depth + 1)
             local expr2 = self:GenerateMathString(r, depth + 1)
             result = string.format("(%s - %s)%s", expr1, expr2, noise)
         
-        elseif op == 3 then -- Decimal Multiplication
-            local factor = (math.random(110, 500) / 100) -- e.g. 1.1 to 5.0
+        elseif op == 3 then -- Multiplication
+            local factor = (math.random(110, 500) / 100)
             local expr1 = self:GenerateMathString(val / factor, depth + 1)
             result = string.format("(%s * %.2f)%s", expr1, factor, noise)
         
-        elseif op == 4 then -- Floating Division
+        elseif op == 4 then -- Division
             local factor = (math.random(200, 1000) / 100)
             local expr1 = self:GenerateMathString(val * factor, depth + 1)
             result = string.format("(%s / %.2f)%s", expr1, factor, noise)
         
-        elseif op == 5 then -- Logical Obfuscation
-            local junk = math.random() * 1000
+        elseif op == 5 then -- Ternary logic
             local cond1 = math.random(1, 5)
-            local cond2 = math.random(1, 5)
+            local cond2 = cond1 -- Make them equal so expression is always true
             local trueVal = self:GenerateMathString(val, depth + 1)
-            local falseVal = string.format("%.2f", junk)
+            local falseVal = "0" -- Simple false value
             result = string.format("((%d == %d) and %s or %s)%s", cond1, cond2, trueVal, falseVal, noise)
         
-        else -- Modulo/Multi-Op Garbage (simplified version)
-            local r = math.random(1, 10)
-            result = string.format("(%s - %d + (10 %% 9))", self:GenerateMathString(val, depth + 1), r)
+        else -- Modulo expression (safe version)
+            local baseExpr = self:GenerateMathString(val, depth + 1)
+            result = self:GetModuloExpression(baseExpr) .. noise
         end
         
-        -- Ensure parentheses are balanced
-        result = ensureParenthesesBalanced(result)
+        -- Clean up the expression
+        result = result:gsub("%s+", " ") -- Normalize spaces
+        result = result:gsub("%%+", "%%") -- Ensure single %
         
         -- Test if the expression parses correctly
         if self:testExpression(result) then
             break
         else
-            result = nil  -- Try again
+            result = nil
         end
     end
     
     -- Fallback if all attempts failed
     if not result then
-        return string.format("%.2f", val)
+        return self:GenerateSimpleExpression(val)
     end
     
     return result
@@ -175,8 +190,14 @@ function NumbersToExpressions:apply(ast)
                 
                 local mathStr = self:GenerateMathString(node.value, 0)
                 
-                -- Ensure parentheses are balanced one more time
-                mathStr = ensureParenthesesBalanced(mathStr)
+                -- Clean up modulo operators
+                mathStr = mathStr:gsub("%%+", "%%")
+                
+                -- Ensure the expression is valid
+                if not self:testExpression(mathStr) then
+                    -- Try a simpler approach
+                    mathStr = self:GenerateSimpleExpression(node.value)
+                end
                 
                 local escapedMathStr = escapeLuaString(mathStr)
                 local parseString = "local _ = " .. escapedMathStr
@@ -191,14 +212,10 @@ function NumbersToExpressions:apply(ast)
                         expression.NoObfuscation = true
                         expression.IsGenerated = true
                         return expression
-                    else
-                        -- Fallback to original number
-                        return nil
                     end
-                else
-                    -- Fallback to original number if parsing fails
-                    return nil
                 end
+                -- If anything fails, keep the original node
+                return nil
             end
         end
     end)
