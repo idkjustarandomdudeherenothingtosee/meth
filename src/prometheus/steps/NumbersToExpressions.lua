@@ -41,69 +41,131 @@ end
 function NumbersToExpressions:GetNoise()
     local r = math.random(1, 1000) / 100
     local noiseTypes = {
-        string.format("((%s * 0))", r),
-        string.format("((%s - %s))", r, r),
+        string.format("(%s * 0)", r),
+        string.format("(%s - %s)", r, r),
         string.format("((%s * %s) * 0)", r, math.random())
     }
     return noiseTypes[math.random(#noiseTypes)]
 end
 
+-- Helper to ensure parentheses are balanced
+local function ensureParenthesesBalanced(expr)
+    local open = 0
+    local maxDepth = 0
+    local currentDepth = 0
+    
+    for i = 1, #expr do
+        local c = expr:sub(i, i)
+        if c == "(" then
+            open = open + 1
+            currentDepth = currentDepth + 1
+            maxDepth = math.max(maxDepth, currentDepth)
+        elseif c == ")" then
+            open = open - 1
+            currentDepth = currentDepth - 1
+            if open < 0 then
+                -- Too many closing parentheses
+                expr = "(" .. expr
+                open = 0
+                currentDepth = 1
+            end
+        end
+    end
+    
+    -- Add missing closing parentheses
+    while open > 0 do
+        expr = expr .. ")"
+        open = open - 1
+    end
+    
+    return expr
+end
+
+-- Test if expression parses correctly
+function NumbersToExpressions:testExpression(expr)
+    local parseString = "local _ = " .. expr
+    local success, tempAst = pcall(function() 
+        return self.internalParser:parse(parseString) 
+    end)
+    
+    return success and tempAst ~= nil
+end
+
 function NumbersToExpressions:GenerateMathString(val, depth)
     if depth >= self.MaxDepth then
-        -- Randomly choose between decimal or integer representation
-        if math.random() > 0.5 then
+        -- Base case - return simple representation
+        if math.random() > 0.5 and math.floor(val) ~= val then
             return string.format("%.2f", val)
         else
             return tostring(val)
         end
     end
 
-    local op = math.random(1, 6)
-    local noise = (math.random() > 0.7) and (" + " .. self:GetNoise()) or ""
-
-    if op == 1 then -- Chaotic Addition
-        local r = (math.random(-5000, 5000) / 100)
-        return string.format("((%s + %s)%s)", 
-            self:GenerateMathString(r, depth + 1), 
-            self:GenerateMathString(val - r, depth + 1), 
-            noise)
-    
-    elseif op == 2 then -- Chaotic Subtraction
-        local r = (math.random(-5000, 5000) / 100)
-        return string.format("((%s - %s)%s)", 
-            self:GenerateMathString(val + r, depth + 1), 
-            self:GenerateMathString(r, depth + 1), 
-            noise)
-    
-    elseif op == 3 then -- Decimal Multiplication
-        local factor = (math.random(110, 500) / 100) -- e.g. 1.1 to 5.0
-        return string.format("((%s * %s)%s)", 
-            self:GenerateMathString(val / factor, depth + 1), 
-            factor, 
-            noise)
-    
-    elseif op == 4 then -- Floating Division
-        local factor = (math.random(200, 1000) / 100)
-        return string.format("((%s / %s)%s)", 
-            self:GenerateMathString(val * factor, depth + 1), 
-            factor, 
-            noise)
-    
-    elseif op == 5 then -- Logical Obfuscation
-        local junk = math.random() * 1000
-        return string.format("(((%s == %s) and %s or %s)%s)", 
-            math.random(1,5), 
-            math.random(1,5), 
-            self:GenerateMathString(val, depth + 1), 
-            junk, 
-            noise)
-    
-    else -- Modulo/Multi-Op Garbage
-        -- Represents: ((val - 1) + (10 % 9)) -> essentially val
-        -- NOTE: %% becomes % in the final string
-        return string.format("((%s - 1) + (10 %% 9))", 
-            self:GenerateMathString(val, depth + 1))
+    local noise = ""
+    if math.random() > 0.7 then
+        noise = " + " .. self:GetNoise()
     end
+
+    -- Generate a valid expression
+    local result = nil
+    local attempts = 0
+    
+    while attempts < 10 do  -- Try up to 10 times to generate a valid expression
+        attempts = attempts + 1
+        local op = math.random(1, 6)
+        
+        if op == 1 then -- Chaotic Addition
+            local r = (math.random(-5000, 5000) / 100)
+            local expr1 = self:GenerateMathString(r, depth + 1)
+            local expr2 = self:GenerateMathString(val - r, depth + 1)
+            result = string.format("(%s + %s)%s", expr1, expr2, noise)
+        
+        elseif op == 2 then -- Chaotic Subtraction
+            local r = (math.random(-5000, 5000) / 100)
+            local expr1 = self:GenerateMathString(val + r, depth + 1)
+            local expr2 = self:GenerateMathString(r, depth + 1)
+            result = string.format("(%s - %s)%s", expr1, expr2, noise)
+        
+        elseif op == 3 then -- Decimal Multiplication
+            local factor = (math.random(110, 500) / 100) -- e.g. 1.1 to 5.0
+            local expr1 = self:GenerateMathString(val / factor, depth + 1)
+            result = string.format("(%s * %.2f)%s", expr1, factor, noise)
+        
+        elseif op == 4 then -- Floating Division
+            local factor = (math.random(200, 1000) / 100)
+            local expr1 = self:GenerateMathString(val * factor, depth + 1)
+            result = string.format("(%s / %.2f)%s", expr1, factor, noise)
+        
+        elseif op == 5 then -- Logical Obfuscation
+            local junk = math.random() * 1000
+            local cond1 = math.random(1, 5)
+            local cond2 = math.random(1, 5)
+            local trueVal = self:GenerateMathString(val, depth + 1)
+            local falseVal = string.format("%.2f", junk)
+            result = string.format("((%d == %d) and %s or %s)%s", cond1, cond2, trueVal, falseVal, noise)
+        
+        else -- Modulo/Multi-Op Garbage (simplified version)
+            local r = math.random(1, 10)
+            result = string.format("(%s - %d + (10 %% 9))", self:GenerateMathString(val, depth + 1), r)
+        end
+        
+        -- Ensure parentheses are balanced
+        result = ensureParenthesesBalanced(result)
+        
+        -- Test if the expression parses correctly
+        if self:testExpression(result) then
+            break
+        else
+            result = nil  -- Try again
+        end
+    end
+    
+    -- Fallback if all attempts failed
+    if not result then
+        return string.format("%.2f", val)
+    end
+    
+    return result
 end
 
 function NumbersToExpressions:apply(ast)
@@ -113,6 +175,8 @@ function NumbersToExpressions:apply(ast)
                 
                 local mathStr = self:GenerateMathString(node.value, 0)
                 
+                -- Ensure parentheses are balanced one more time
+                mathStr = ensureParenthesesBalanced(mathStr)
                 
                 local escapedMathStr = escapeLuaString(mathStr)
                 local parseString = "local _ = " .. escapedMathStr
@@ -128,10 +192,12 @@ function NumbersToExpressions:apply(ast)
                         expression.IsGenerated = true
                         return expression
                     else
-                        
+                        -- Fallback to original number
+                        return nil
                     end
                 else
-                    
+                    -- Fallback to original number if parsing fails
+                    return nil
                 end
             end
         end
