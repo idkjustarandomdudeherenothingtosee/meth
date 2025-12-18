@@ -1,5 +1,5 @@
--- EncryptStrings.lua - Symbol Mapping Edition
--- Maps every encrypted byte to a unique sequence of special characters.
+-- EncryptStrings.lua - Lua 5.4 Compatible Version
+-- Uses hexadecimal escapes to ensure compatibility with Lua 5.4's stricter string parsing
 
 local Step = require("prometheus.step")
 local Ast = require("prometheus.ast")
@@ -11,32 +11,35 @@ local util = require("prometheus.util")
 local AstKind = Ast.AstKind
 
 local EncryptStrings = Step:extend()
-EncryptStrings.Description = "Encrypts strings and converts bytes into unique symbol sequences."
-EncryptStrings.Name = "Encrypt Strings (Symbolic)"
+EncryptStrings.Description = "Encrypts strings and converts bytes into unique hexadecimal escape sequences."
+EncryptStrings.Name = "Encrypt Strings (Lua 5.4 Hex Escape)"
 
 function EncryptStrings:init(settings) end
 
-function EncryptStrings:CreateEncrypionService()
+function EncryptStrings:CreateEncryptionService()
     local usedSeeds = {}
-    local syms = {"!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "-", "+", "=", "{", "}"}
     
-    -- Generate a unique 3-character symbol sequence for every byte (0-255)
+    -- Use a mix of alphanumeric and safe symbols to avoid Lua parsing issues
+    local syms = {
+        "A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
+        "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",
+        "0","1","2","3","4","5","6","7","8","9"
+    }
+    
+    -- Generate unique 2-character sequences for each byte (0-255)
+    -- 62^2 = 3844 possible sequences, more than enough for 256 bytes
     local byteToSymbol = {}
     local symbolToByte = {}
-    local count = 0
-    for i = 1, #syms do
-        for j = 1, #syms do
-            for k = 1, #syms do
-                if count <= 255 then
-                    local seq = syms[i] .. syms[j] .. syms[k]
-                    byteToSymbol[count] = seq
-                    symbolToByte[seq] = count
-                    count = count + 1
-                end
-            end
-        end
+    
+    for byte = 0, 255 do
+        local idx1 = math.floor(byte / #syms) + 1
+        local idx2 = (byte % #syms) + 1
+        local seq = syms[idx1] .. syms[idx2]
+        byteToSymbol[byte] = seq
+        symbolToByte[seq] = byte
     end
 
+    -- Random keys for encryption
     local secret_key_6 = math.random(0, 63)
     local secret_key_7 = math.random(0, 127)
     local secret_key_44 = math.random(0, 17592186044415)
@@ -45,7 +48,11 @@ function EncryptStrings:CreateEncrypionService()
     local floor = math.floor
     local function primitive_root_257(idx)
         local g, m, d = 1, 128, 2 * idx + 1
-        repeat g, m, d = g * g * (d >= m and 3 or 1) % 257, m / 2, d % m until m < 1
+        repeat
+            g = g * g * (d >= m and 3 or 1) % 257
+            m = m / 2
+            d = d % m
+        until m < 1
         return g
     end
 
@@ -63,7 +70,10 @@ function EncryptStrings:CreateEncrypionService()
 
     local function get_random_32()
         state_45 = (state_45 * param_mul_45 + param_add_45) % 35184372088832
-        repeat state_8 = state_8 * param_mul_8 % 257 until state_8 ~= 1
+        repeat
+            state_8 = state_8 * param_mul_8 % 257
+        until state_8 ~= 1
+        
         local r = state_8 % 32
         local n = floor(state_45 / 2 ^ (13 - (state_8 - r) / 32)) % 2 ^ 32 / 2 ^ r
         return floor(n % 1 * 2 ^ 32) + floor(n)
@@ -72,107 +82,199 @@ function EncryptStrings:CreateEncrypionService()
     local function get_next_pseudo_random_byte()
         if #prev_values == 0 then
             local rnd = get_random_32()
-            prev_values = { rnd % 256, floor(rnd / 256) % 256, floor(rnd / 65536) % 256, floor(rnd / 16777216) % 256 }
+            prev_values = {
+                rnd % 256,
+                floor(rnd / 256) % 256,
+                floor(rnd / 65536) % 256,
+                floor(rnd / 16777216) % 256
+            }
         end
-        return table.remove(prev_values)
+        return table.remove(prev_values, 1)
     end
 
     local function encrypt(str)
         local seed = math.random(0, 35184372088832)
         set_seed(seed)
-        local out = {}
+        
+        local out_chunks = {}
         local prevVal = secret_key_8
+        
         for i = 1, #str do
             local byte = string.byte(str, i)
             local encryptedByte = (byte - (get_next_pseudo_random_byte() + prevVal)) % 256
-            table.insert(out, byteToSymbol[encryptedByte])
+            table.insert(out_chunks, byteToSymbol[encryptedByte])
             prevVal = byte
         end
-        return table.concat(out), seed
+        
+        -- Convert to hexadecimal escape sequences for Lua 5.4 compatibility
+        local concatenated = table.concat(out_chunks)
+        local hex_escaped = ""
+        
+        for j = 1, #concatenated do
+            local char = concatenated:sub(j, j)
+            local byte = string.byte(char)
+            -- Use \xHH format for all non-alphanumeric characters to be safe
+            if (byte >= 48 and byte <= 57) or    -- 0-9
+               (byte >= 65 and byte <= 90) or    -- A-Z
+               (byte >= 97 and byte <= 122) then -- a-z
+                hex_escaped = hex_escaped .. char
+            else
+                hex_escaped = hex_escaped .. string.format("\\x%02X", byte)
+            end
+        end
+        
+        return hex_escaped, seed
     end
 
     local function genCode()
-        -- Construct the Reverse Symbol Map for the Lua environment
-        local mapStr = "local symMap = {"
+        -- Build the symbol map using hexadecimal escapes for safety
+        local mapLines = {}
+        
         for seq, byte in pairs(symbolToByte) do
-            mapStr = mapStr .. string.format("['%s']=%d,", seq, byte)
+            -- Escape each character in the sequence
+            local escapedSeq = ""
+            for i = 1, #seq do
+                local char = seq:sub(i, i)
+                local byte = string.byte(char)
+                escapedSeq = escapedSeq .. string.format("\\x%02X", byte)
+            end
+            
+            table.insert(mapLines, string.format("[%q]=%d", escapedSeq, byte))
         end
-        mapStr = mapStr .. "};"
+        
+        local mapStr = "local symMap = {\n    " .. table.concat(mapLines, ",\n    ") .. "\n}"
+        
+        return mapStr .. [[
 
-        return [[
 do
     ]] .. mapStr .. [[
+    
     local floor, char, sub = math.floor, string.char, string.sub
     local state_45, state_8, prev_values = 0, 2, {}
-
+    
     local function get_next_pseudo()
         if #prev_values == 0 then
             state_45 = (state_45 * ]] .. param_mul_45 .. [[ + ]] .. param_add_45 .. [[) % 35184372088832
-            repeat state_8 = state_8 * ]] .. param_mul_8 .. [[ % 257 until state_8 ~= 1
+            repeat
+                state_8 = state_8 * ]] .. param_mul_8 .. [[ % 257
+            until state_8 ~= 1
+            
             local r = state_8 % 32
             local n = floor(state_45 / 2 ^ (13 - (state_8 - r) / 32)) % 2 ^ 32 / 2 ^ r
             local rnd = floor(n % 1 * 2 ^ 32) + floor(n)
-            prev_values = { rnd % 256, floor(rnd / 256) % 256, floor(rnd / 65536) % 256, floor(rnd / 16777216) % 256 }
+            prev_values = {
+                rnd % 256,
+                floor(rnd / 256) % 256,
+                floor(rnd / 65536) % 256,
+                floor(rnd / 16777216) % 256
+            }
         end
-        return table.remove(prev_values)
+        return table.remove(prev_values, 1)
     end
-
+    
     local cache = {}
-    STRINGS = setmetatable({}, {__index = cache})
-
-    function DECRYPT(str, seed)
-        if cache[seed] then return seed end
-        state_45, state_8, prev_values = seed % 35184372088832, seed % 255 + 2, {}
-        local res, prevVal = {}, ]] .. secret_key_8 .. [[
-        for i = 1, #str, 3 do
-            local sym = sub(str, i, i + 2)
-            local encryptedByte = symMap[sym]
+    STRINGS = setmetatable({}, {
+        __index = function(t, key)
+            return cache[key]
+        end
+    })
+    
+    function DECRYPT(hexStr, seed)
+        if cache[seed] then
+            return seed
+        end
+        
+        -- Reset PRNG state
+        state_45 = seed % 35184372088832
+        state_8 = seed % 255 + 2
+        prev_values = {}
+        
+        -- Convert hex escape string back to symbol sequence
+        local symbolStr = hexStr:gsub("\\x(%x%x)", function(hex)
+            return string.char(tonumber(hex, 16))
+        end)
+        
+        local res = {}
+        local prevVal = ]] .. secret_key_8 .. [[
+        
+        -- Process in chunks of 2 characters (each symbol)
+        for i = 1, #symbolStr, 2 do
+            local symbol = sub(symbolStr, i, i + 1)
+            local encryptedByte = symMap[symbol]
+            
+            if encryptedByte == nil then
+                error("Invalid symbol in encrypted string: " .. symbol)
+            end
+            
             prevVal = (encryptedByte + get_next_pseudo() + prevVal) % 256
             table.insert(res, char(prevVal))
         end
+        
         cache[seed] = table.concat(res)
         return seed
     end
 end]]
     end
 
-    return { encrypt = encrypt, genCode = genCode }
+    return {
+        encrypt = encrypt,
+        genCode = genCode,
+        byteToSymbol = byteToSymbol,
+        symbolToByte = symbolToByte
+    }
 end
 
 function EncryptStrings:apply(ast, pipeline)
-    local Encryptor = self:CreateEncrypionService()
-    local newAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua51 }):parse(Encryptor.genCode())
+    local Encryptor = self:CreateEncryptionService()
+    
+    -- Parse the decryption code into AST
+    local newAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua54 }):parse(Encryptor.genCode())
     local doStat = newAst.body.statements[1]
     local scope = ast.body.scope
-    local decryptVar, stringsVar = scope:addVariable(), scope:addVariable()
     
+    -- Add variables for the decrypt function and strings table
+    local decryptVar = scope:addVariable()
+    local stringsVar = scope:addVariable()
+    
+    -- Set parent scope for the new code
     doStat.body.scope:setParent(scope)
-
-    -- Rename internal variables for obfuscation
+    
+    -- Rename internal variables to use the generated variable names
     visitast(newAst, nil, function(node, data)
         if node.kind == AstKind.FunctionDeclaration and node.scope:getVariableName(node.id) == "DECRYPT" then
             node.id = decryptVar
-        elseif (node.kind == AstKind.AssignmentVariable or node.kind == AstKind.VariableExpression) and node.scope:getVariableName(node.id) == "STRINGS" then
+        elseif (node.kind == AstKind.AssignmentVariable or node.kind == AstKind.VariableExpression) and
+               node.scope:getVariableName(node.id) == "STRINGS" then
             node.id = stringsVar
         end
     end)
-
-    -- Replace String Literals with Decrypt Calls
+    
+    -- Replace all string literals with decrypt calls
     visitast(ast, nil, function(node, data)
         if node.kind == AstKind.StringExpression and not node.IsGenerated then
             local encrypted, seed = Encryptor.encrypt(node.value)
-            local call = Ast.IndexExpression(
-                Ast.VariableExpression(scope, stringsVar),
-                Ast.FunctionCallExpression(Ast.VariableExpression(scope, decryptVar), {
+            
+            -- Create a call to DECRYPT(encrypted, seed)
+            local decryptCall = Ast.FunctionCallExpression(
+                Ast.VariableExpression(scope, decryptVar),
+                {
                     Ast.StringExpression(encrypted),
                     Ast.NumberExpression(seed)
-                })
+                }
             )
-            call.IsGenerated = true
-            return call
+            
+            -- Create index expression: STRINGS[DECRYPT(...)]
+            local indexExpr = Ast.IndexExpression(
+                Ast.VariableExpression(scope, stringsVar),
+                decryptCall
+            )
+            
+            indexExpr.IsGenerated = true
+            return indexExpr
         end
     end)
-
+    
+    -- Insert the decryption code at the beginning
     table.insert(ast.body.statements, 1, doStat)
     table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(scope, {decryptVar, stringsVar}, {}))
 end
