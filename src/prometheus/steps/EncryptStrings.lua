@@ -11,6 +11,23 @@ EncryptStrings.Name = "Encrypt Strings (Simple XOR)"
 
 function EncryptStrings:init(settings) end
 
+-- XOR function for Lua 5.1 (without bit32 library)
+local function bxor(a, b)
+    local result = 0
+    local bitval = 1
+    while a > 0 or b > 0 do
+        local abit = a % 2
+        local bbit = b % 2
+        if abit ~= bbit then
+            result = result + bitval
+        end
+        a = math.floor(a / 2)
+        b = math.floor(b / 2)
+        bitval = bitval * 2
+    end
+    return result
+end
+
 function EncryptStrings:CreateEncryptionService()
     -- Simple XOR encryption with a random key
     local key = math.random(1, 255)
@@ -19,23 +36,41 @@ function EncryptStrings:CreateEncryptionService()
         local bytes = {}
         for i = 1, #str do
             local byte = string.byte(str, i)
-            local encrypted = bit32.bxor(byte, key)
-            -- Convert to hex for easier embedding
-            table.insert(bytes, string.format("\\x%02x", encrypted))
+            local encrypted = bxor(byte, key)
+            -- Convert to decimal string representation
+            table.insert(bytes, string.format("\\%03d", encrypted))
         end
         return table.concat(bytes), key
     end
     
     local function genCode()
-        return [[
--- Simple XOR decryption function
-local function __decrypt_str(encrypted_hex, key)
+        -- Lua 5.1 compatible XOR function
+        local xorFunction = [[
+local function __bxor(a, b)
+    local r = 0
+    local f = 1
+    while a > 0 or b > 0 do
+        local aa = a % 2
+        local bb = b % 2
+        if aa ~= bb then
+            r = r + f
+        end
+        a = math.floor(a / 2)
+        b = math.floor(b / 2)
+        f = f * 2
+    end
+    return r
+end
+]]
+        
+        return xorFunction .. [[
+
+local function __decrypt_str(encrypted, key)
     local result = ""
-    for i = 1, #encrypted_hex, 4 do
-        -- Parse hex byte like "\x41"
-        local hex = encrypted_hex:sub(i + 2, i + 3)
-        local encrypted_byte = tonumber(hex, 16) or 0
-        local decrypted_byte = bit32.bxor(encrypted_byte, key)
+    -- Parse escaped decimal sequences like \065\066\067
+    for code in encrypted:gmatch("\\(%d%d%d)") do
+        local encrypted_byte = tonumber(code) or 0
+        local decrypted_byte = __bxor(encrypted_byte, key)
         result = result .. string.char(decrypted_byte)
     end
     return result
@@ -52,8 +87,10 @@ function EncryptStrings:apply(ast, pipeline)
     -- Parse and insert the decryption function at the beginning
     local decryptAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua51 }):parse(enc.genCode())
     if decryptAst and decryptAst.body and decryptAst.body.statements then
-        -- Insert the function declaration at the start
-        table.insert(ast.body.statements, 1, decryptAst.body.statements[1])
+        -- Insert all statements from the generated code
+        for i = #decryptAst.body.statements, 1, -1 do
+            table.insert(ast.body.statements, 1, decryptAst.body.statements[i])
+        end
     end
     
     -- Create a scope variable for the decryption function
@@ -61,22 +98,21 @@ function EncryptStrings:apply(ast, pipeline)
     local decryptVar = scope:addVariable()
     
     -- Create an assignment for the decryption function
-    -- This makes sure the function is properly named in the scope
     local funcDecl = Ast.LocalVariableDeclaration(
         scope,
         { decryptVar },
         { Ast.StringExpression("__decrypt_str") }
     )
     
-    -- Insert the variable declaration after the function
-    table.insert(ast.body.statements, 2, funcDecl)
+    -- Insert the variable declaration after the functions
+    table.insert(ast.body.statements, #decryptAst.body.statements + 1, funcDecl)
     
     -- Replace string literals with decryption calls
     visitast(ast, nil, function(node)
         if node.kind == AstKind.StringExpression and not node.IsGenerated then
             local encrypted, key = enc.encrypt(node.value)
             
-            -- Create: __decrypt_str("encrypted_hex", key)
+            -- Create: __decrypt_str("encrypted", key)
             local call = Ast.FunctionCallExpression(
                 Ast.VariableExpression(scope, decryptVar),
                 { 
