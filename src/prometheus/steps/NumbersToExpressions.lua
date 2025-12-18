@@ -33,7 +33,7 @@ end
 
 -- Generates "Zero-Sum Noise" (Math that equals 0 but looks complex)
 function NumbersToExpressions:GetNoise()
-    local r = math.random(1, 1000) / 100
+    local r = math.random(1, 10) / 100
     local noiseTypes = {
         string.format("(%s * 0)", r),
         string.format("(%s - %s)", r, r),
