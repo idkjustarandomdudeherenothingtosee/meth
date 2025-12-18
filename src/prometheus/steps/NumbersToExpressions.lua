@@ -11,7 +11,7 @@ NumbersToExpressions.Name = "Numbers To Expressions (Chaotic)"
 
 NumbersToExpressions.SettingsDescriptor = {
     Treshold = { type = "number", default = 1 },
-    MaxDepth = { type = "number", default = 3 } -- Reduced from 4 to prevent crashes
+    MaxDepth = { type = "number", default = 2 }
 }
 
 function NumbersToExpressions:init(settings)
@@ -31,19 +31,6 @@ local function extractExpression(tempAst)
     return (stmt.init and stmt.init[1]) or (stmt.values and stmt.values[1]) or (stmt.expressions and stmt.expressions[1])
 end
 
--- Generates "Zero-Sum Noise" (Math that equals 0 but looks complex)
-function NumbersToExpressions:GetNoise()
-    local r = math.random(1, 10) / 100
-    local noiseTypes = {
-        string.format("(%s * 0)", r),
-        string.format("(%s - %s)", r, r),
-        string.format("(math.sin(0) * %s)", r),
-        string.format("(0 / math.max(1, %s))", r),
-        string.format("(math.pi - math.pi)")
-    }
-    return noiseTypes[math.random(#noiseTypes)]
-end
-
 -- Test if expression parses correctly
 function NumbersToExpressions:testExpression(expr)
     local parseString = "local _ = " .. expr
@@ -54,119 +41,78 @@ function NumbersToExpressions:testExpression(expr)
     return success and tempAst ~= nil
 end
 
--- Generate a simple expression without recursion
-function NumbersToExpressions:GenerateSimpleExpression(val)
-    if val == 0 then return "0" end
+-- Generate math expression using safe variable names that won't conflict
+function NumbersToExpressions:GenerateMathExpression(val)
+    local expressions = {}
     
-    -- Limit val to reasonable range to prevent weird divisions
-    local safeVal = val
-    if math.abs(val) > 1000000 then
-        safeVal = val / 1000
-    elseif math.abs(val) < 0.0001 and val ~= 0 then
-        safeVal = val * 1000
+    -- Level 1: Basic arithmetic
+    local a = math.random(100, 999) / 100
+    local b = math.random(100, 999) / 100
+    local c = math.random(100, 999) / 100
+    
+    table.insert(expressions, string.format("(%s * (math.sin(0) + 1.0))", val))
+    table.insert(expressions, string.format("(%s + (math.cos(math.pi) + 1.0))", val))
+    table.insert(expressions, string.format("(%s / (math.tan(0) + 1.0))", val))
+    
+    -- Level 2: More complex with multiple math calls
+    table.insert(expressions, string.format("((%s * math.abs(%.3f)) / math.abs(%.3f))", val, a, a))
+    table.insert(expressions, string.format("((%s + math.floor(%.3f)) - math.floor(%.3f))", val, b, b))
+    table.insert(expressions, string.format("((%s - math.ceil(%.3f)) + math.ceil(%.3f))", val, c, c))
+    
+    -- Level 3: Even more complex
+    local pi_val = math.pi
+    local e_val = math.exp(1)
+    
+    table.insert(expressions, string.format("((%s * (math.sin(0) * math.cos(0) + 1.0)) / (math.tan(0) + 1.0))", val))
+    table.insert(expressions, string.format("((%s + (math.sqrt(%.3f) - math.sqrt(%.3f))) * 1.0)", val, a, a))
+    table.insert(expressions, string.format("((%s - (math.log(%.3f) - math.log(%.3f))) / 1.0)", val, b, b))
+    
+    -- Level 4: Nested math functions
+    table.insert(expressions, string.format("math.abs(%s * math.sin(0) + %s)", val, val))
+    table.insert(expressions, string.format("math.floor(math.abs(%s * math.cos(0) + %s))", val, val))
+    table.insert(expressions, string.format("math.ceil(math.sqrt(math.abs(%s)))", val))
+    
+    -- Level 5: Complex expressions that equal the original value
+    local r1 = math.random(1, 10)
+    local r2 = math.random(1, 10)
+    
+    table.insert(expressions, string.format("((%s * (math.sin(0)^2 + math.cos(0)^2)) / 1.0)", val))
+    table.insert(expressions, string.format("((%s + (math.exp(0) - 1.0)) - 0.0)", val))
+    table.insert(expressions, string.format("((%s * math.exp(math.log(1.0))) + (math.sin(0) * %d))", val, r1))
+    table.insert(expressions, string.format("((%s / math.exp(math.log(1.0))) - (math.cos(math.pi/2) * %d))", val, r2))
+    
+    -- Select a random expression
+    local selected = expressions[math.random(#expressions)]
+    
+    -- Add extra parentheses for complexity
+    if math.random() > 0.5 then
+        selected = string.format("((%s))", selected)
     end
     
-    local methods = {
-        function(v) 
-            local a = math.random(1, 1000) / 100
-            local b = v - a
-            return string.format("(%.2f + %.2f)", a, b)
-        end,
-        function(v)
-            local a = math.random(1, 1000) / 100
-            local b = v + a
-            return string.format("(%.2f - %.2f)", b, a)
-        end,
-        function(v)
-            if v == 0 then return "0" end
-            local factor = math.random(11, 50) / 10
-            local base = v / factor
-            if math.abs(base) > 1000000 or math.abs(base) < 0.0001 then
-                return string.format("%.4f", v)
-            end
-            return string.format("(%.2f * %.1f)", base, factor)
-        end,
-        function(v)
-            if v == 0 then return "0" end
-            local factor = math.random(11, 50) / 10
-            local base = v * factor
-            if math.abs(base) > 1000000 or math.abs(base) < 0.0001 then
-                return string.format("%.4f", v)
-            end
-            return string.format("(%.2f / %.1f)", base, factor)
-        end,
-        function(v)
-            -- Power of 2 approach
-            if v == 0 then return "0" end
-            local pow = math.random(1, 3)
-            local base = v / (2 ^ pow)
-            if math.abs(base) > 1000000 or math.abs(base) < 0.0001 then
-                return string.format("%.4f", v)
-            end
-            return string.format("(%.2f * %.0f)", base, 2 ^ pow)
-        end
-    }
-    
-    local result = methods[math.random(#methods)](safeVal)
-    
-    -- If result is invalid, return the value directly
-    if not self:testExpression(result) then
-        return string.format("%.4f", val)
-    end
-    
-    return result
+    return selected
 end
 
--- Non-recursive expression generation
-function NumbersToExpressions:GenerateMathString(val)
-    -- Start with a simple expression
-    local result = self:GenerateSimpleExpression(val)
+-- Simple number to expression with math functions
+function NumbersToExpressions:NumberToExpression(val)
+    if val == 0 then
+        return "0.0"
+    end
     
-    -- Add some layers of complexity (non-recursive)
-    local layers = math.random(1, self.MaxDepth)
-    
-    for i = 1, layers do
-        local noise = ""
-        if math.random() > 0.5 then
-            noise = " + " .. self:GetNoise()
-        end
+    -- Try multiple times to get a valid expression
+    for attempt = 1, 5 do
+        local expr = self:GenerateMathExpression(val)
         
-        local op = math.random(1, 4)
-        
-        if op == 1 then -- Add parentheses with addition
-            local r = (math.random(-1000, 1000) / 100)
-            local newResult = string.format("((%s + %.2f)%s)", result, r, noise)
-            if self:testExpression(newResult) then
-                result = newResult
-            end
-            
-        elseif op == 2 then -- Add parentheses with subtraction
-            local r = (math.random(-1000, 1000) / 100)
-            local newResult = string.format("((%s - %.2f)%s)", result, r, noise)
-            if self:testExpression(newResult) then
-                result = newResult
-            end
-            
-        elseif op == 3 then -- Ternary wrapper
-            local cond1 = math.random(1, 5)
-            local cond2 = cond1
-            local falseVal = math.random(1, 1000) / 100
-            local newResult = string.format("((%d == %d) and %s or %.2f)%s", 
-                cond1, cond2, result, falseVal, noise)
-            if self:testExpression(newResult) then
-                result = newResult
-            end
-            
-        elseif op == 4 then -- Multiply by 1 with parentheses
-            local factor = 1.0
-            local newResult = string.format("((%s * %.1f)%s)", result, factor, noise)
-            if self:testExpression(newResult) then
-                result = newResult
-            end
+        if self:testExpression(expr) then
+            return expr
         end
     end
     
-    return result
+    -- Fallback to simple representation
+    if math.floor(val) == val then
+        return tostring(val)
+    else
+        return string.format("%.6f", val)
+    end
 end
 
 function NumbersToExpressions:apply(ast)
@@ -174,36 +120,16 @@ function NumbersToExpressions:apply(ast)
         if node.kind == Ast.AstKind.NumberExpression and not node.NoObfuscation and not node.IsGenerated then
             if math.random() <= self.Treshold then
                 
-                local mathStr = nil
-                local success = false
-                
-                -- Try up to 3 times to generate a valid expression
-                for attempt = 1, 3 do
-                    mathStr = self:GenerateMathString(node.value)
-                    
-                    if self:testExpression(mathStr) then
-                        success = true
-                        break
-                    end
-                end
-                
-                -- If still not valid, use simple representation
-                if not success then
-                    if math.floor(node.value) == node.value then
-                        mathStr = tostring(node.value)
-                    else
-                        mathStr = string.format("%.4f", node.value)
-                    end
-                end
+                local mathStr = self:NumberToExpression(node.value)
                 
                 local escapedMathStr = escapeLuaString(mathStr)
                 local parseString = "local _ = " .. escapedMathStr
                 
-                local parseSuccess, tempAst = pcall(function() 
+                local success, tempAst = pcall(function() 
                     return self.internalParser:parse(parseString) 
                 end)
 
-                if parseSuccess and tempAst then
+                if success and tempAst then
                     local expression = extractExpression(tempAst)
                     if expression then
                         expression.NoObfuscation = true
