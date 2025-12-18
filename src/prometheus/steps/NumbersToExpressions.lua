@@ -113,10 +113,7 @@ function NumbersToExpressions:apply(ast)
                 
                 local mathStr = self:GenerateMathString(node.value, 0)
                 
-                -- DEBUG: Print the generated math string
-                print("Generated math string: " .. mathStr)
                 
-                -- Escape the string before parsing
                 local escapedMathStr = escapeLuaString(mathStr)
                 local parseString = "local _ = " .. escapedMathStr
                 
@@ -133,11 +130,10 @@ function NumbersToExpressions:apply(ast)
                         expression.IsGenerated = true
                         return expression
                     else
-                        print("WARNING: Could not extract expression from: " .. mathStr)
+                        
                     end
                 else
-                    print("ERROR: Failed to parse math string: " .. mathStr)
-                    print("Parse string was: " .. parseString)
+                    
                 end
             end
         end
